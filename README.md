@@ -1,58 +1,46 @@
-# DistanceMeter - Đồng Hồ Đo Km & Tính Tiền Cước GPS (100% JavaScript)
+# DistanceMeter - Đồng Hồ Đo Km & Tính Tiền Cước GPS (100% Client-side JavaScript)
 
-Ứng dụng web thời gian thực phục vụ việc đo quãng đường di chuyển bằng GPS (quy chuẩn bước nhảy **0.1 km**), nhúng bản đồ OpenStreetMap trực quan và tính cước theo bảng giá quy định bậc thang — **toàn bộ xử lý 100% trong JavaScript ở phía Frontend, không cần cài đặt hay chạy Backend Python.**
+Ứng dụng web thời gian thực phục vụ việc đo quãng đường di chuyển bằng GPS (quy chuẩn bước nhảy **0.1 km**), nhúng bản đồ trực quan (Google Maps, Carto Voyager, Ảnh Vệ Tinh) và tính cước theo bảng giá quy định bậc thang **Taxi Xanh SM**.
+
+Toàn bộ ứng dụng được đóng gói gọn trong **1 file duy nhất (`index.html`)**, chạy 100% bằng JavaScript trên trình duyệt mà không cần cài đặt bất kỳ server hay thư viện backend nào.
 
 ---
 
-## 🌟 Ưu điểm của phiên bản gom gọn (Pure JS Frontend)
+## 🌟 Tính năng nổi bật
 
-1. **Không cần Backend / Python**: Toàn bộ thuật toán đo khoảng cách (Haversine), làm tròn step 0.1 km, tính cước bậc thang, lọc nhiễu GPS và sinh biên lai đều được thực thi trực tiếp trên trình duyệt.
-2. **Khởi chạy tức thì**: Bạn chỉ cần nhấp đúp vào file [`index.html`](file:///d:/DistanceMeter/index.html) để mở và sử dụng ngay lập tức trong Chrome, Edge, Cốc Cốc, Safari... mà không cần bật server.
-3. **Đầy đủ tính năng**:
-   - Tự động bắt tín hiệu GPS thật trên điện thoại / máy tính (`navigator.geolocation.watchPosition`).
-   - Nhúng bản đồ **OpenStreetMap & Leaflet** sắc nét, vẽ đường di chuyển (Polyline) xanh ngọc, marker A điểm xuất phát và marker radar pulse điểm hiện tại.
-   - Nút **Mô phỏng GPS (Test máy tính)**: Giả lập xe chạy quanh hồ Hoàn Kiếm để kiểm thử tính năng nhảy số km và tính cước ngay tại chỗ.
-   - Biên lai cước chuyến đi chi tiết từng bậc tính tiền, hỗ trợ nút **In biên lai / Xuất PDF**.
-   - Hỗ trợ nhiều loại xe: **Xe 4 chỗ, Xe 7 chỗ, Xe máy**.
+1. **Không cần cài đặt**: Chỉ cần mở file [`index.html`](file:///d:/DistanceMeter/index.html) bằng bất kỳ trình duyệt nào (Chrome, Edge, Safari, Cốc Cốc, v.v.).
+2. **Bảng giá chuẩn Taxi Xanh SM**:
+   - **Giá mở cửa**: 30.500 VNĐ cho 2.0 km đầu tiên (áp dụng tối thiểu ngay từ 0.0 km).
+   - **Từ km tiếp theo đến km 12**: 15.200 VNĐ / km (1.520 VNĐ / 0.1 km).
+   - **Từ km tiếp theo đến km 25**: 14.700 VNĐ / km (1.470 VNĐ / 0.1 km).
+   - **Từ km thứ 26 trở đi**: 13.300 VNĐ / km (1.330 VNĐ / 0.1 km).
+   - Cước thời gian chờ: 60.000 VNĐ / giờ.
+3. **Đo quãng đường GPS chuẩn xác (step 0.1 km)**:
+   - Thuật toán Haversine đo khoảng cách chuẩn xác, tự động lọc rung lắc GPS khi dừng xe.
+   - Làm tròn mỗi 100 mét (step 0.1) đúng chuẩn đồng hồ taxi.
+4. **Bản đồ không bị chặn 403**:
+   - Tích hợp Google Maps sắc nét, chi tiết đường xá ngõ hẻm Việt Nam.
+   - Kèm theo bản đồ Carto Voyager và Ảnh Vệ Tinh, chuyển đổi layer bằng 1 click.
+5. **Chế độ Mô phỏng GPS (Test máy tính)**:
+   - Giả lập xe chạy quanh hồ Hoàn Kiếm, giúp bạn test nhảy số km và tính cước ngay tại chỗ.
+6. **Biên lai & In hoá đơn**:
+   - Xuất hoá đơn chi tiết từng bậc cước và hỗ trợ In/Lưu PDF tiện lợi.
 
 ---
 
 ## 🚀 Cách sử dụng
 
-### Cách 1: Mở trực tiếp bằng 1-Click (Khuyên dùng)
 Nhấp đúp chuột vào file:
-👉 **[`index.html`](file:///d:/DistanceMeter/index.html)** hoặc file **[`start.bat`](file:///d:/DistanceMeter/start.bat)**
-
-### Cách 2: Chạy qua React + Vite (Nếu muốn phát triển thêm)
-```powershell
-cd d:\DistanceMeter\frontend
-npm run dev
-```
-Truy cập [http://localhost:3000](http://localhost:3000)
+👉 **`index.html`** hoặc **`start.bat`**
 
 ---
 
-## ⚙️ Bảng giá cấu hình trong file JS
+## 📁 Cấu trúc thư mục tối giản
 
-Bạn có thể chỉnh sửa bảng giá hoặc bước nhảy trực tiếp tại đầu file:
-- File độc lập: [`index.html`](file:///d:/DistanceMeter/index.html) (tìm phần `DEFAULT_PRICING`)
-- Dự án React: [`frontend/src/App.jsx`](file:///d:/DistanceMeter/frontend/src/App.jsx) (tìm phần `DEFAULT_PRICING`)
-
-```javascript
-const DEFAULT_PRICING = {
-  step_km: 0.1, // Bước nhảy làm tròn
-  rounding_mode: "round", // "round" (làm tròn chuẩn) hoặc "ceil" (làm tròn lên)
-  vehicles: {
-    car_4seats: {
-      name: "Xe 4 chỗ",
-      base_fare: 12000,      // Giá mở cửa 12.000đ cho 1 km đầu
-      base_distance_km: 1.0,
-      tiers: [
-        { from_km: 1.0, to_km: 10.0, price_per_km: 14500, description: "Từ trên 1 km đến 10 km" },
-        { from_km: 10.0, to_km: 30.0, price_per_km: 13000, description: "Từ trên 10 km đến 30 km" },
-        { from_km: 30.0, to_km: null, price_per_km: 11000, description: "Từ trên 30 km trở đi" }
-      ]
-    }
-  }
-};
+```
+d:\DistanceMeter\
+├── index.html     # Toàn bộ ứng dụng Web (Giao diện + Bản đồ + Tính cước)
+├── start.bat      # File mở nhanh 1-click
+├── README.md      # Tài liệu hướng dẫn
+└── .gitignore     # Cấu hình Git
 ```

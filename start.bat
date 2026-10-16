@@ -9,9 +9,9 @@ echo Dang mo ung dung tren trinh duyet...
 start "" "%~dp0index.html"
 
 echo.
-echo Ung dung da duoc mo truc tiep tu file:
+echo Ung dung da duoc mo truc tiep tren trinh duyet tu file:
 echo %~dp0index.html
 echo.
-echo (Ban cung co the chay thu muc frontend bang: cd frontend ^&^& npm run dev)
+echo Ban co the bat "Mo phong GPS (Test may tinh)" de kiem tra tinh tien.
 echo.
 pause
