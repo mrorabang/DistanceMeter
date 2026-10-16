@@ -173,25 +173,6 @@
       }
     };
 
-    // Toạ độ giả lập chạy thử quanh Hồ Hoàn Kiếm, Hà Nội khi test trên máy tính
-    const SIMULATION_ROUTE = [
-      { lat: 21.028511, lng: 105.854167 },
-      { lat: 21.029400, lng: 105.854450 },
-      { lat: 21.030700, lng: 105.854600 },
-      { lat: 21.032000, lng: 105.854100 },
-      { lat: 21.033200, lng: 105.853200 },
-      { lat: 21.033800, lng: 105.852000 },
-      { lat: 21.033400, lng: 105.850700 },
-      { lat: 21.032100, lng: 105.850300 },
-      { lat: 21.030600, lng: 105.850900 },
-      { lat: 21.029300, lng: 105.851700 },
-      { lat: 21.028100, lng: 105.852600 },
-      { lat: 21.026900, lng: 105.853600 },
-      { lat: 21.026500, lng: 105.854800 },
-      { lat: 21.027600, lng: 105.855500 },
-      { lat: 21.028511, lng: 105.854167 }
-    ];
-
     // =========================================================================
     // 2. CÁC HÀM TÍNH TOÁN (HAVERSINE, STEP 0.1 KM, TÍNH CƯỚC BẬC THANG)
     // =========================================================================
@@ -517,8 +498,6 @@
       const [durationSeconds, setDurationSeconds] = useState(0);
       const [currentSpeedKmh, setCurrentSpeedKmh] = useState(0);
 
-      // Chế độ mô phỏng
-      const [isSimulating, setIsSimulating] = useState(false);
       const [gpsStatus, setGpsStatus] = useState('Đang khởi tạo GPS...');
       
       // Thời gian
@@ -537,8 +516,6 @@
       const startMarkerRef = useRef(null);
       const watchIdRef = useRef(null);
       const timerRef = useRef(null);
-      const simIntervalRef = useRef(null);
-      const simIndexRef = useRef(0);
 
       // --- Khởi tạo Bản đồ Leaflet ---
       useEffect(() => {
@@ -694,7 +671,7 @@
 
       // GPS Watcher khi di chuyển thật trên đường
       useEffect(() => {
-        if (tripStatus === 'running' && !isSimulating) {
+        if (tripStatus === 'running') {
           if (!('geolocation' in navigator)) {
             alert('Trình duyệt không hỗ trợ Geolocation!');
             return;
@@ -751,44 +728,7 @@
             watchIdRef.current = null;
           }
         };
-      }, [tripStatus, isSimulating]);
-
-      // Chế độ chạy thử / Mô phỏng GPS trên máy tính
-      useEffect(() => {
-        if (tripStatus === 'running' && isSimulating) {
-          simIntervalRef.current = setInterval(() => {
-            simIndexRef.current = (simIndexRef.current + 1) % SIMULATION_ROUTE.length;
-            const target = SIMULATION_ROUTE[simIndexRef.current];
-            const simPt = {
-              lat: target.lat + (Math.random() - 0.5) * 0.0001,
-              lng: target.lng + (Math.random() - 0.5) * 0.0001,
-              accuracy: 5,
-              timestamp: Date.now(),
-              speed: 8.5
-            };
-
-            setCurrentPos(simPt);
-            setCurrentSpeedKmh(28 + Math.random() * 6);
-
-            if (mapRef.current) {
-              mapRef.current.panTo([simPt.lat, simPt.lng], { animate: true });
-            }
-
-            setPathCoords((prev) => {
-              if (prev.length === 0) return [simPt];
-              const last = prev[prev.length - 1];
-              const distKm = haversineDistance(last.lat, last.lng, simPt.lat, simPt.lng);
-              setRawDistanceKm((d) => d + distKm);
-              return [...prev, simPt];
-            });
-          }, 1500);
-        } else {
-          if (simIntervalRef.current) clearInterval(simIntervalRef.current);
-        }
-        return () => {
-          if (simIntervalRef.current) clearInterval(simIntervalRef.current);
-        };
-      }, [tripStatus, isSimulating]);
+      }, [tripStatus]);
 
       // Điều khiển chuyến đi
       const handleStart = () => {
@@ -859,9 +799,7 @@
                     <h1 className="text-lg md:text-xl font-black tracking-tight text-white">
                       Distance<span className="text-emerald-400">Meter</span>
                     </h1>
-                    <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                      Step 0.1 KM (JS Pure)
-                    </span>
+          
                   </div>
                   <p className="text-xs text-slate-400">Đồng hồ GPS & Tính cước trực tiếp tại trình duyệt</p>
                 </div>
@@ -902,10 +840,9 @@
             <div className="flex items-center justify-between text-xs px-2 text-slate-400">
               <div className="flex items-center gap-2">
                 <span className={`w-2.5 h-2.5 rounded-full ${
-                  isSimulating ? 'bg-purple-500 animate-pulse' :
                   tripStatus === 'running' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'
                 }`} />
-                <span>{isSimulating ? 'Đang mô phỏng xe chạy quanh Hồ Gươm' : gpsStatus}</span>
+                <span>{gpsStatus}</span>
               </div>
               {tripStatus === 'running' && (
                 <div className="text-emerald-400 font-semibold animate-pulse">
@@ -1054,19 +991,6 @@
                   </button>
                 )}
               </div>
-
-              {/* Nút bật/tắt Chế độ Giả lập trên máy tính */}
-              <button
-                onClick={() => setIsSimulating(!isSimulating)}
-                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold border transition-all ${
-                  isSimulating
-                    ? 'bg-purple-600/30 border-purple-500 text-purple-300 shadow-lg'
-                    : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
-                }`}
-              >
-                <Icons.Sparkles />
-                 <span>{isSimulating ? 'Đang bật mô phỏng GPS' : 'Mô phỏng GPS (Test máy tính)'}</span>
-              </button>
             </div>
 
             {/* Khung bản đồ Leaflet */}

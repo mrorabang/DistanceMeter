@@ -12,6 +12,4 @@ echo.
 echo Ung dung da duoc mo truc tiep tren trinh duyet tu file:
 echo %~dp0index.html
 echo.
-echo Ban co the bat "Mo phong GPS (Test may tinh)" de kiem tra tinh tien.
-echo.
 pause

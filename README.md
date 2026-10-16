@@ -21,10 +21,8 @@ Toàn bộ ứng dụng được đóng gói gọn trong **1 file duy nhất (`i
 4. **Bản đồ không bị chặn 403**:
    - Tích hợp Google Maps sắc nét, chi tiết đường xá ngõ hẻm Việt Nam.
    - Kèm theo bản đồ Carto Voyager và Ảnh Vệ Tinh, chuyển đổi layer bằng 1 click.
-5. **Chế độ Mô phỏng GPS (Test máy tính)**:
-   - Giả lập xe chạy quanh hồ Hoàn Kiếm, giúp bạn test nhảy số km và tính cước ngay tại chỗ.
-6. **Biên lai & In hoá đơn**:
-   - Xuất hoá đơn chi tiết từng bậc cước và hỗ trợ In/Lưu PDF tiện lợi.
+5. **Biên lai & In hoá đơn**:
+   - Xuất hoá đơn chi tiết từng bậc cước kèm hình ảnh đoạn đường đã di chuyển và hỗ trợ In/Lưu PDF tiện lợi.
 
 ---
 
