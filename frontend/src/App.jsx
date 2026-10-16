@@ -121,37 +121,25 @@ function roundToStep(distanceKm, step = 0.1, mode = 'round') {
 }
 
 // Tính cước xe bậc thang
-function calculateFare(distanceKm, vehicleKey = 'car_4seats', pricing = DEFAULT_PRICING) {
-  const vehicle = pricing.vehicles[vehicleKey] || pricing.vehicles.car_4seats;
+function calculateFare(distanceKm, vehicleKey = 'xanh_sm', pricing = DEFAULT_PRICING) {
+  const vehicle = pricing.vehicles[vehicleKey] || pricing.vehicles.xanh_sm || Object.values(pricing.vehicles)[0];
   const steppedKm = roundToStep(distanceKm, pricing.step_km, pricing.rounding_mode);
 
-  if (steppedKm <= 0) {
-    return {
-      vehicleName: vehicle.name,
-      rawDistanceKm: Number((distanceKm || 0).toFixed(3)),
-      steppedDistanceKm: 0.0,
-      totalFare: 0,
-      breakdown: []
-    };
-  }
-
-  let total = 0;
-  const breakdown = [];
   const baseDist = vehicle.base_distance_km;
   const baseFare = vehicle.base_fare;
 
-  // 1. Cước mở cửa
+  // Luôn áp dụng giá mở cửa ngay từ đầu
+  let total = baseFare;
   const distInBase = Math.min(steppedKm, baseDist);
-  total += baseFare;
-  breakdown.push({
+  const breakdown = [{
     stepName: `Giá mở cửa (${baseDist} km đầu)`,
     distanceKm: Number(distInBase.toFixed(1)),
     rate: baseFare,
     unit: 'đ/chuyến',
     subtotal: baseFare
-  });
+  }];
 
-  // 2. Bậc cước tiếp theo
+  // Nếu vượt quá số km mở cửa thì cộng thêm các bậc tiếp theo
   if (steppedKm > baseDist) {
     for (const tier of vehicle.tiers) {
       if (steppedKm > tier.from_km) {
@@ -209,8 +197,8 @@ export default function App() {
   const [pathCoords, setPathCoords] = useState([]);
   const [rawDistanceKm, setRawDistanceKm] = useState(0.0);
   const [steppedDistanceKm, setSteppedDistanceKm] = useState(0.0);
-  const [totalFare, setTotalFare] = useState(0);
-  const [fareResult, setFareResult] = useState(null);
+  const [totalFare, setTotalFare] = useState(() => DEFAULT_PRICING.vehicles.xanh_sm.base_fare);
+  const [fareResult, setFareResult] = useState(() => calculateFare(0, 'xanh_sm', DEFAULT_PRICING));
   const [durationSeconds, setDurationSeconds] = useState(0);
   const [currentSpeedKmh, setCurrentSpeedKmh] = useState(0);
 
@@ -473,7 +461,9 @@ export default function App() {
     setTripStatus('running');
     setRawDistanceKm(0.0);
     setSteppedDistanceKm(0.0);
-    setTotalFare(0);
+    const base = pricing.vehicles[selectedVehicle]?.base_fare || 30500;
+    setTotalFare(base);
+    setFareResult(calculateFare(0, selectedVehicle, pricing));
     setDurationSeconds(0);
     setPathCoords([currentPos]);
   };
@@ -493,6 +483,7 @@ export default function App() {
     setCurrentSpeedKmh(0);
     const finalFare = calculateFare(rawDistanceKm, selectedVehicle, pricing);
     setFareResult(finalFare);
+    setTotalFare(finalFare.totalFare);
     setShowInvoice(true);
   };
 
@@ -501,12 +492,13 @@ export default function App() {
     setPathCoords([]);
     setRawDistanceKm(0.0);
     setSteppedDistanceKm(0.0);
-    setTotalFare(0);
+    const base = pricing.vehicles[selectedVehicle]?.base_fare || 30500;
+    setTotalFare(base);
     setDurationSeconds(0);
     setCurrentSpeedKmh(0);
     setStartTime(null);
     setEndTime(null);
-    setFareResult(null);
+    setFareResult(calculateFare(0, selectedVehicle, pricing));
   };
 
   const handleRecenter = () => {

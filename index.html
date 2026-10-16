@@ -214,36 +214,24 @@
 
     // Tính cước theo bảng giá bậc thang và số km quy chuẩn
     function calculateFare(distanceKm, vehicleKey, pricingConfig = DEFAULT_PRICING) {
-      const vehicle = pricingConfig.vehicles[vehicleKey] || pricingConfig.vehicles.car_4seats;
+      const vehicle = pricingConfig.vehicles[vehicleKey] || pricingConfig.vehicles.xanh_sm || Object.values(pricingConfig.vehicles)[0];
       const steppedKm = roundToStep(distanceKm, pricingConfig.step_km, pricingConfig.rounding_mode);
 
-      if (steppedKm <= 0) {
-        return {
-          vehicleName: vehicle.name,
-          rawDistanceKm: Number((distanceKm || 0).toFixed(3)),
-          steppedDistanceKm: 0.0,
-          totalFare: 0,
-          breakdown: []
-        };
-      }
-
-      let total = 0;
-      const breakdown = [];
       const baseDist = vehicle.base_distance_km;
       const baseFare = vehicle.base_fare;
 
-      // 1. Cước mở cửa
+      // Giá mở cửa LUÔN được tính ngay từ khi bắt đầu chuyến (kể cả khi 0.0 km)
+      let total = baseFare;
       const distInBase = Math.min(steppedKm, baseDist);
-      total += baseFare;
-      breakdown.push({
+      const breakdown = [{
         stepName: `Giá mở cửa (${baseDist} km đầu)`,
         distanceKm: Number(distInBase.toFixed(1)),
         rate: baseFare,
         unit: 'đ/chuyến',
         subtotal: baseFare
-      });
+      }];
 
-      // 2. Các bậc cước tiếp theo
+      // Nếu vượt quá số km mở cửa thì tính thêm các bậc tiếp theo
       if (steppedKm > baseDist) {
         for (const tier of vehicle.tiers) {
           if (steppedKm > tier.from_km) {
@@ -402,8 +390,8 @@
       const [pathCoords, setPathCoords] = useState([]);
       const [rawDistanceKm, setRawDistanceKm] = useState(0.0);
       const [steppedDistanceKm, setSteppedDistanceKm] = useState(0.0);
-      const [totalFare, setTotalFare] = useState(0);
-      const [fareResult, setFareResult] = useState(null);
+      const [totalFare, setTotalFare] = useState(() => DEFAULT_PRICING.vehicles.xanh_sm.base_fare);
+      const [fareResult, setFareResult] = useState(() => calculateFare(0, 'xanh_sm', DEFAULT_PRICING));
       const [durationSeconds, setDurationSeconds] = useState(0);
       const [currentSpeedKmh, setCurrentSpeedKmh] = useState(0);
 
@@ -687,7 +675,9 @@
         setTripStatus('running');
         setRawDistanceKm(0.0);
         setSteppedDistanceKm(0.0);
-        setTotalFare(0);
+        const base = pricing.vehicles[selectedVehicle]?.base_fare || 30500;
+        setTotalFare(base);
+        setFareResult(calculateFare(0, selectedVehicle, pricing));
         setDurationSeconds(0);
         setPathCoords([currentPos]);
       };
@@ -709,6 +699,7 @@
         // Tính cước hoá đơn chính thức
         const finalFare = calculateFare(rawDistanceKm, selectedVehicle, pricing);
         setFareResult(finalFare);
+        setTotalFare(finalFare.totalFare);
         setShowInvoice(true);
       };
 
@@ -717,12 +708,13 @@
         setPathCoords([]);
         setRawDistanceKm(0.0);
         setSteppedDistanceKm(0.0);
-        setTotalFare(0);
+        const base = pricing.vehicles[selectedVehicle]?.base_fare || 30500;
+        setTotalFare(base);
         setDurationSeconds(0);
         setCurrentSpeedKmh(0);
         setStartTime(null);
         setEndTime(null);
-        setFareResult(null);
+        setFareResult(calculateFare(0, selectedVehicle, pricing));
       };
 
       const handleRecenter = () => {
@@ -836,7 +828,9 @@
                   {formatVND(totalFare)}
                 </div>
                 <div className="mt-1 text-[11px] text-slate-400">
-                  Tính tự động theo bậc thang
+                  {steppedDistanceKm <= (pricing.vehicles[selectedVehicle]?.base_distance_km || 2.0)
+                    ? `Áp dụng giá mở cửa (${pricing.vehicles[selectedVehicle]?.base_distance_km || 2.0} km đầu)`
+                    : 'Tính lũy tiến theo các bậc cước'}
                 </div>
               </div>
 

@@ -53,34 +53,19 @@ def calculate_fare(
     pricing = VEHICLE_PRICING[vehicle_type]
     stepped_km = round_to_step(distance_km)
 
-    if stepped_km <= 0:
-        return {
-            "vehicle_type": vehicle_type,
-            "vehicle_name": pricing["name"],
-            "raw_distance_km": round(distance_km, 3),
-            "stepped_distance_km": 0.0,
-            "step_precision": STEP_KM,
-            "base_fare": pricing["base_fare"],
-            "total_fare": 0,
-            "currency": pricing["currency"],
-            "breakdown": []
-        }
-
-    breakdown = []
-    total_fare = 0.0
     base_dist = pricing["base_distance_km"]
     base_fare = pricing["base_fare"]
 
-    # 1. Giá mở cửa
+    # Luôn tính giá mở cửa ngay từ mét đầu tiên (kể cả 0.0 km)
+    total_fare = float(base_fare)
     dist_in_base = min(stepped_km, base_dist)
-    total_fare += base_fare
-    breakdown.append({
+    breakdown = [{
         "step_name": f"Giá mở cửa ({base_dist} km đầu)",
         "distance_km": round(dist_in_base, 1),
         "rate": base_fare,
         "rate_unit": f"{pricing['currency']}/chuyến",
         "subtotal": base_fare
-    })
+    }]
 
     # 2. Các bậc tiếp theo
     if stepped_km > base_dist:
