@@ -360,7 +360,7 @@
     // CÁC HÀM TƯƠNG TÁC VỚI FIREBASE FIRESTORE & DỰ PHÒNG LOCALSTORAGE
     // =========================================================================
     async function saveTripToDb(tripData) {
-      // 1. Lưu dự phòng vào localStorage
+      // 1. Luôn lưu dự phòng vào localStorage của máy
       try {
         const local = JSON.parse(localStorage.getItem('distancemeter_trips') || '[]');
         const updated = [tripData, ...local.filter(t => t.stt !== tripData.stt)];
@@ -376,7 +376,13 @@
           return { success: true, id: docRef.id, from: 'firebase' };
         } catch (err) {
           console.warn("Lỗi ghi Cloud Firestore (dùng dữ liệu lưu máy):", err);
-          return { success: true, id: 'local_' + Date.now(), from: 'local', error: err.message };
+          return { 
+            success: true, 
+            id: 'local_' + Date.now(), 
+            from: 'local', 
+            error: err.message, 
+            code: err.code || (err.message && err.message.includes('permission') ? 'permission-denied' : 'error')
+          };
         }
       }
       return { success: true, id: 'local_' + Date.now(), from: 'local' };
@@ -390,7 +396,7 @@
         localTrips = [];
       }
 
-      if (!db) return localTrips;
+      if (!db) return { trips: localTrips, from: 'local' };
 
       try {
         const timeoutPromise = new Promise((_, reject) => 
@@ -408,13 +414,37 @@
           try {
             localStorage.setItem('distancemeter_trips', JSON.stringify(fbTrips));
           } catch (e) {}
-          return fbTrips;
+          return { trips: fbTrips, from: 'firebase' };
         }
-        return localTrips;
+        return { trips: localTrips, from: 'firebase_empty' };
       } catch (err) {
         console.warn("Không thể tải từ Cloud Firestore (Dùng dữ liệu local):", err);
-        return localTrips;
+        return { 
+          trips: localTrips, 
+          from: 'local', 
+          firebaseError: err.code || (err.message && err.message.includes('permission') ? 'permission-denied' : 'error') 
+        };
       }
+    }
+
+    async function syncLocalTripsToFirebase() {
+      if (!db) throw new Error("Chưa kết nối Firebase");
+      const local = JSON.parse(localStorage.getItem('distancemeter_trips') || '[]');
+      if (local.length === 0) return { synced: 0, total: 0, trips: [] };
+
+      let count = 0;
+      const updated = [...local];
+      for (let i = 0; i < updated.length; i++) {
+        const item = updated[i];
+        if (!item.id || item.id.startsWith('local_')) {
+          const { id, ...dataToSave } = item;
+          const docRef = await db.collection('trips').add(dataToSave);
+          updated[i] = { ...item, id: docRef.id };
+          count++;
+        }
+      }
+      localStorage.setItem('distancemeter_trips', JSON.stringify(updated));
+      return { synced: count, total: updated.length, trips: updated };
     }
 
     async function deleteTripFromDb(trip) {
@@ -430,7 +460,7 @@
 
       if (db) {
         try {
-          if (trip.id) {
+          if (trip.id && !trip.id.startsWith('local_')) {
             await db.collection('trips').doc(trip.id).delete();
           } else if (trip.stt) {
             const q = await db.collection('trips').where('stt', '==', trip.stt).get();
@@ -855,12 +885,16 @@
       onRefresh,
       onDeleteTrip,
       onViewInvoice,
-      onPreviewImage
+      onPreviewImage,
+      firebaseError,
+      onSyncAll,
+      isSyncing
     }) {
       if (!isOpen) return null;
 
       const totalKm = trips.reduce((sum, t) => sum + (Number(t.distance) || 0), 0);
       const totalRevenue = trips.reduce((sum, t) => sum + (Number(t.total_fare) || 0), 0);
+      const unsyncedCount = trips.filter(t => !t.id || t.id.startsWith('local_')).length;
 
       return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm">
@@ -880,9 +914,14 @@
                   </div>
                   <div className="flex items-center gap-2 mt-0.5 text-xs text-slate-400">
                     <span className="flex items-center gap-1">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                      <span className={`w-2 h-2 rounded-full ${firebaseError === 'permission-denied' ? 'bg-amber-400 animate-ping' : 'bg-emerald-400 animate-pulse'}`}></span>
                       <span>Firebase: <code className="text-emerald-300 font-mono">distancemeter-b7a3a</code></span>
                     </span>
+                    {unsyncedCount > 0 && (
+                      <span className="text-amber-400 text-[11px] font-semibold bg-amber-500/15 px-2 py-0.5 rounded-full border border-amber-500/30">
+                        {unsyncedCount} chuyến lưu tạm máy
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -929,6 +968,44 @@
                 </span>
               </div>
             </div>
+
+            {/* Cảnh báo Firebase Rules & Nút đồng bộ */}
+            {(unsyncedCount > 0 || firebaseError === 'permission-denied') && (
+              <div className="mx-4 sm:mx-6 mt-4 p-4 rounded-2xl bg-amber-950/40 border border-amber-500/50 text-xs text-amber-200 space-y-2.5 shadow-lg">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2 font-bold text-amber-300">
+                    <span className="text-base">⚠️</span>
+                    <span>Firebase Firestore đang chặn quyền ghi ({unsyncedCount} chuyến chưa lưu lên Cloud)</span>
+                  </div>
+                  <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[11px] font-mono border border-amber-500/40 font-semibold">
+                    Lỗi 403: PERMISSION_DENIED
+                  </span>
+                </div>
+                <p className="text-[11px] text-amber-100/90 leading-relaxed">
+                  Do Firestore mặc định đặt <b>Rules</b> chặn ghi (<code>allow read, write: if false;</code>). Dữ liệu chuyến đi của bạn hiện vẫn <b>lưu an toàn 100% trong máy</b>.
+                  <br />
+                  👉 Để dữ liệu hiện trên Firebase Console: Vào tab <b>Rules</b> trên Firebase Console, đổi thành: <code className="bg-slate-900 px-1.5 py-0.5 rounded text-emerald-400 font-mono">allow read, write: if true;</code> rồi bấm <b>Publish</b>.
+                </p>
+                <div className="flex items-center gap-2 pt-1 flex-wrap">
+                  <button
+                    onClick={onSyncAll}
+                    disabled={isSyncing}
+                    className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+                  >
+                    <span className={isSyncing ? "animate-spin" : ""}>🔄</span>
+                    <span>{isSyncing ? "Đang đẩy lên Firebase..." : `Đã mở Rules, Đồng bộ ngay ${unsyncedCount} chuyến lên Cloud`}</span>
+                  </button>
+                  <a
+                    href="https://console.firebase.google.com/project/distancemeter-b7a3a/firestore/rules"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold text-xs border border-amber-500/30 transition-all flex items-center gap-1"
+                  >
+                    Mở tab Rules trên Firebase Console ↗
+                  </a>
+                </div>
+              </div>
+            )}
 
             {/* Nội dung danh sách chuyến */}
             <div className="p-4 sm:p-6 overflow-y-auto space-y-3 flex-1">
@@ -1130,6 +1207,8 @@
       const [currentTripStt, setCurrentTripStt] = useState(null);
       const [savingStatus, setSavingStatus] = useState(null);
       const [lastRouteImg, setLastRouteImg] = useState(null);
+      const [firebaseError, setFirebaseError] = useState(null);
+      const [isSyncing, setIsSyncing] = useState(false);
 
       // Refs
       const mapContainerRef = useRef(null);
@@ -1361,12 +1440,38 @@
       const loadSavedTrips = async () => {
         setHistoryLoading(true);
         try {
-          const list = await fetchTripsFromDb();
+          const res = await fetchTripsFromDb();
+          const list = res.trips || res;
           setSavedTrips(list);
+          if (res.firebaseError) {
+            setFirebaseError(res.firebaseError);
+          } else {
+            setFirebaseError(null);
+          }
         } catch (e) {
           console.warn("Lỗi tải chuyến đi:", e);
         } finally {
           setHistoryLoading(false);
+        }
+      };
+
+      const handleSyncAll = async () => {
+        setIsSyncing(true);
+        try {
+          const res = await syncLocalTripsToFirebase();
+          if (res.synced > 0) {
+            alert(`🎉 Đồng bộ thành công ${res.synced} chuyến đi lên Firebase Cloud!`);
+            setSavedTrips(res.trips);
+            setFirebaseError(null);
+          } else {
+            alert("Tất cả chuyến đi đều đã được lưu trên Firebase Cloud!");
+            setFirebaseError(null);
+          }
+        } catch (err) {
+          alert(`❌ Lỗi khi đồng bộ: ${err.message}\n\nHãy đảm bảo bạn đã đổi Rules trên Firebase Console thành 'allow read, write: if true;' và bấm Publish nhé!`);
+          setFirebaseError('permission-denied');
+        } finally {
+          setIsSyncing(false);
         }
       };
 
@@ -2010,6 +2115,9 @@
             onDeleteTrip={handleDeleteTrip}
             onViewInvoice={handleViewPastTripInvoice}
             onPreviewImage={(src) => setPreviewImg(src)}
+            firebaseError={firebaseError}
+            onSyncAll={handleSyncAll}
+            isSyncing={isSyncing}
           />
 
           {/* ================================================================= */}
