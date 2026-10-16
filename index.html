@@ -140,6 +140,10 @@
           firebase.initializeApp(firebaseConfig);
         }
         db = firebase.firestore();
+        // Bật cơ chế offline persistence của Firestore: tự động lưu khi mất mạng và đồng bộ ngay khi có mạng lại
+        db.enablePersistence({ synchronizeTabs: true }).catch((err) => {
+          console.warn("Firestore offline persistence:", err.code);
+        });
         isFirebaseReady = true;
       }
     } catch (err) {
