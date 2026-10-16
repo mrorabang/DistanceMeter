@@ -1,0 +1,1193 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>DistanceMeter - Đồng Hồ Đo Km & Tính Tiền Cước GPS (Step 0.1 KM)</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Leaflet CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- React 18 & ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- Babel Standalone để biên dịch JSX trực tiếp trên trình duyệt -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    /* Tùy chỉnh bản đồ Leaflet */
+    .leaflet-container {
+      width: 100%;
+      height: 100%;
+      border-radius: 1rem;
+      z-index: 10;
+      background-color: #0f172a;
+    }
+    /* Radar pulse marker cho vị trí GPS hiện tại */
+    .gps-pulse-marker {
+      position: relative;
+    }
+    .gps-pulse-marker .core-dot {
+      width: 16px;
+      height: 16px;
+      background-color: #06b6d4;
+      border: 3px solid #ffffff;
+      border-radius: 50%;
+      box-shadow: 0 0 10px rgba(6, 182, 212, 0.9);
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 2;
+    }
+    .gps-pulse-marker .pulse-ring {
+      width: 44px;
+      height: 44px;
+      background-color: rgba(6, 182, 212, 0.35);
+      border-radius: 50%;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      animation: gps-pulse 2s infinite ease-out;
+      z-index: 1;
+    }
+    @keyframes gps-pulse {
+      0% { transform: translate(-50%, -50%) scale(0.3); opacity: 1; }
+      100% { transform: translate(-50%, -50%) scale(1.6); opacity: 0; }
+    }
+    .leaflet-control-layers {
+      background: rgba(15, 23, 42, 0.92) !important;
+      color: #f1f5f9 !important;
+      border: 1px solid rgba(51, 65, 85, 0.8) !important;
+      border-radius: 0.75rem !important;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 10px 20px -3px rgba(0, 0, 0, 0.6) !important;
+      padding: 8px 12px !important;
+      font-size: 12px !important;
+      font-weight: 500;
+    }
+    .leaflet-control-layers label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      margin: 3px 0;
+    }
+    .leaflet-control-layers-toggle {
+      background-color: rgba(15, 23, 42, 0.9) !important;
+      border-radius: 0.5rem;
+    }
+    @media print {
+      body * { visibility: hidden; }
+      #printable-receipt, #printable-receipt * { visibility: visible; }
+      #printable-receipt {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        background: white !important;
+        color: black !important;
+      }
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen antialiased selection:bg-emerald-500 selection:text-white">
+  <div id="root"></div>
+
+  <!-- SCRIPT XỬ LÝ TOÀN BỘ 100% TRONG JAVASCRIPT (KHÔNG CẦN BACKEND) -->
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // =========================================================================
+    // 1. CẤU HÌNH BẢNG GIÁ CỐ ĐỊNH & BƯỚC NHẢY (STEP 0.1 KM)
+    // =========================================================================
+    const DEFAULT_PRICING = {
+      step_km: 0.1, // Bước nhảy 0.1 km
+      rounding_mode: "round", // Làm tròn chuẩn theo step 0.1
+      waiting_fee_per_hour: 60000, // Giá cước thời gian chờ: 60.000 VNĐ/giờ
+      vehicles: {
+        xanh_sm: {
+          name: "Taxi Xanh SM",
+          description: "Bảng giá cước Taxi Xanh SM (Đã gồm thuế GTGT & Bảo hiểm)",
+          base_fare: 30500,          // 30.500 VNĐ
+          base_distance_km: 2.0,     // Áp dụng cho 2.0 km đầu tiên
+          tiers: [
+            { 
+              from_km: 2.0, 
+              to_km: 12.0, 
+              price_per_km: 15200, 
+              description: "Giá từ km tiếp theo đến km thứ 12" 
+            },
+            { 
+              from_km: 12.0, 
+              to_km: 25.0, 
+              price_per_km: 14700, 
+              description: "Giá từ km tiếp theo đến km thứ 25" 
+            },
+            { 
+              from_km: 25.0, 
+              to_km: null, 
+              price_per_km: 13300, 
+              description: "Giá từ km thứ 26 trở đi (đường dài)" 
+            }
+          ]
+        },
+        car_4seats: {
+          name: "Xe 4 chỗ tiêu chuẩn",
+          description: "Xe 4 chỗ thông thường",
+          base_fare: 12000,
+          base_distance_km: 1.0,
+          tiers: [
+            { from_km: 1.0, to_km: 10.0, price_per_km: 14500, description: "Từ trên 1 km đến 10 km" },
+            { from_km: 10.0, to_km: 30.0, price_per_km: 13000, description: "Từ trên 10 km đến 30 km" },
+            { from_km: 30.0, to_km: null, price_per_km: 11000, description: "Từ trên 30 km trở đi" }
+          ]
+        },
+        motorbike: {
+          name: "Xe máy",
+          description: "Chở khách hoặc giao hàng bằng xe máy",
+          base_fare: 10000,
+          base_distance_km: 1.5,
+          tiers: [
+            { from_km: 1.5, to_km: 10.0, price_per_km: 5000, description: "Từ trên 1.5 km đến 10 km" },
+            { from_km: 10.0, to_km: null, price_per_km: 4000, description: "Từ trên 10 km trở đi" }
+          ]
+        }
+      }
+    };
+
+    // Toạ độ giả lập chạy thử quanh Hồ Hoàn Kiếm, Hà Nội khi test trên máy tính
+    const SIMULATION_ROUTE = [
+      { lat: 21.028511, lng: 105.854167 },
+      { lat: 21.029400, lng: 105.854450 },
+      { lat: 21.030700, lng: 105.854600 },
+      { lat: 21.032000, lng: 105.854100 },
+      { lat: 21.033200, lng: 105.853200 },
+      { lat: 21.033800, lng: 105.852000 },
+      { lat: 21.033400, lng: 105.850700 },
+      { lat: 21.032100, lng: 105.850300 },
+      { lat: 21.030600, lng: 105.850900 },
+      { lat: 21.029300, lng: 105.851700 },
+      { lat: 21.028100, lng: 105.852600 },
+      { lat: 21.026900, lng: 105.853600 },
+      { lat: 21.026500, lng: 105.854800 },
+      { lat: 21.027600, lng: 105.855500 },
+      { lat: 21.028511, lng: 105.854167 }
+    ];
+
+    // =========================================================================
+    // 2. CÁC HÀM TÍNH TOÁN (HAVERSINE, STEP 0.1 KM, TÍNH CƯỚC BẬC THANG)
+    // =========================================================================
+    
+    // Tính khoảng cách Haversine giữa 2 toạ độ GPS (đơn vị: km)
+    function haversineDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371.0088; // Bán kính Trái Đất (km)
+      const toRad = (x) => (x * Math.PI) / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+
+    // Quy chuẩn số km theo bước nhảy 0.1 km (step 0.1)
+    function roundToStep(distanceKm, step = 0.1, mode = "round") {
+      if (!distanceKm || distanceKm <= 0) return 0.0;
+      const factor = 1 / step;
+      let stepped;
+      if (mode === "ceil") {
+        stepped = Math.ceil(distanceKm * factor) / factor;
+      } else {
+        stepped = Math.round(distanceKm * factor) / factor;
+      }
+      return Number(stepped.toFixed(1));
+    }
+
+    // Tính cước theo bảng giá bậc thang và số km quy chuẩn
+    function calculateFare(distanceKm, vehicleKey, pricingConfig = DEFAULT_PRICING) {
+      const vehicle = pricingConfig.vehicles[vehicleKey] || pricingConfig.vehicles.car_4seats;
+      const steppedKm = roundToStep(distanceKm, pricingConfig.step_km, pricingConfig.rounding_mode);
+
+      if (steppedKm <= 0) {
+        return {
+          vehicleName: vehicle.name,
+          rawDistanceKm: Number((distanceKm || 0).toFixed(3)),
+          steppedDistanceKm: 0.0,
+          totalFare: 0,
+          breakdown: []
+        };
+      }
+
+      let total = 0;
+      const breakdown = [];
+      const baseDist = vehicle.base_distance_km;
+      const baseFare = vehicle.base_fare;
+
+      // 1. Cước mở cửa
+      const distInBase = Math.min(steppedKm, baseDist);
+      total += baseFare;
+      breakdown.push({
+        stepName: `Giá mở cửa (${baseDist} km đầu)`,
+        distanceKm: Number(distInBase.toFixed(1)),
+        rate: baseFare,
+        unit: 'đ/chuyến',
+        subtotal: baseFare
+      });
+
+      // 2. Các bậc cước tiếp theo
+      if (steppedKm > baseDist) {
+        for (const tier of vehicle.tiers) {
+          if (steppedKm > tier.from_km) {
+            const upper = tier.to_km !== null ? Math.min(steppedKm, tier.to_km) : steppedKm;
+            const distInTier = Math.max(0, upper - tier.from_km);
+            if (distInTier > 0) {
+              const roundedTierDist = Number(distInTier.toFixed(1));
+              const sub = Math.round(roundedTierDist * tier.price_per_km);
+              total += sub;
+              breakdown.push({
+                stepName: tier.description || `Từ ${tier.from_km} km`,
+                distanceKm: roundedTierDist,
+                rate: tier.price_per_km,
+                unit: 'đ/km',
+                subtotal: sub
+              });
+            }
+          }
+        }
+      }
+
+      return {
+        vehicleName: vehicle.name,
+        rawDistanceKm: Number(distanceKm.toFixed(3)),
+        steppedDistanceKm: steppedKm,
+        totalFare: total,
+        breakdown
+      };
+    }
+
+    // Định dạng tiền tệ VNĐ
+    function formatVND(amount) {
+      if (amount === undefined || amount === null) return '0 ₫';
+      return new Intl.NumberFormat('vi-VN', {
+        style: 'currency',
+        currency: 'VND',
+        maximumFractionDigits: 0
+      }).format(amount);
+    }
+
+    // Định dạng thời gian hh:mm:ss
+    function formatTime(totalSeconds) {
+      if (!totalSeconds || totalSeconds <= 0) return '00:00:00';
+      const h = Math.floor(totalSeconds / 3600);
+      const m = Math.floor((totalSeconds % 3600) / 60);
+      const s = Math.floor(totalSeconds % 60);
+      const pad = (n) => n.toString().padStart(2, '0');
+      return `${pad(h)}:${pad(m)}:${pad(s)}`;
+    }
+
+    // =========================================================================
+    // 3. ICONS SVG THUẦN
+    // =========================================================================
+    const Icons = {
+      Navigation: () => (
+        <svg className="w-6 h-6 rotate-45" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <polygon points="3 11 22 2 13 21 11 13 3 11"/>
+        </svg>
+      ),
+      Play: () => (
+        <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+      ),
+      Pause: () => (
+        <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+          <rect x="6" y="4" width="4" height="16"/>
+          <rect x="14" y="4" width="4" height="16"/>
+        </svg>
+      ),
+      Stop: () => (
+        <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+          <rect x="5" y="5" width="14" height="14"/>
+        </svg>
+      ),
+      Reset: () => (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+          <path d="M3 3v5h5"/>
+        </svg>
+      ),
+      Crosshair: () => (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="22" y1="12" x2="18" y2="12"/>
+          <line x1="6" y1="12" x2="2" y2="12"/>
+          <line x1="12" y1="6" x2="12" y2="2"/>
+          <line x1="12" y1="22" x2="12" y2="18"/>
+        </svg>
+      ),
+      Coins: () => (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <circle cx="8" cy="8" r="6"/>
+          <path d="M18.09 10.37A6 6 0 1 1 10.34 18"/>
+          <path d="M7 6h1v4"/>
+          <path d="m16.71 13.88.7.71-2.82 2.82"/>
+        </svg>
+      ),
+      Route: () => (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <circle cx="6" cy="19" r="3"/>
+          <path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/>
+          <circle cx="18" cy="5" r="3"/>
+        </svg>
+      ),
+      Clock: () => (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10"/>
+          <polyline points="12 6 12 12 16 14"/>
+        </svg>
+      ),
+      Gauge: () => (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="m12 14 4-4"/>
+          <path d="M3.34 19a10 10 0 1 1 17.32 0"/>
+        </svg>
+      ),
+      Sparkles: () => (
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+        </svg>
+      ),
+      FileText: () => (
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+        </svg>
+      ),
+      Printer: () => (
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <polyline points="6 9 6 2 18 2 18 9"/>
+          <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+          <rect x="6" y="14" width="12" height="8"/>
+        </svg>
+      ),
+      Close: () => (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      )
+    };
+
+    // =========================================================================
+    // 4. MAIN APPLICATION COMPONENT
+    // =========================================================================
+    function App() {
+      const [pricing, setPricing] = useState(DEFAULT_PRICING);
+      const [selectedVehicle, setSelectedVehicle] = useState('xanh_sm');
+      const [tripStatus, setTripStatus] = useState('idle'); // 'idle' | 'running' | 'paused' | 'finished'
+
+      // Metrics
+      const [currentPos, setCurrentPos] = useState({ lat: 21.028511, lng: 105.854167, accuracy: 10 });
+      const [pathCoords, setPathCoords] = useState([]);
+      const [rawDistanceKm, setRawDistanceKm] = useState(0.0);
+      const [steppedDistanceKm, setSteppedDistanceKm] = useState(0.0);
+      const [totalFare, setTotalFare] = useState(0);
+      const [fareResult, setFareResult] = useState(null);
+      const [durationSeconds, setDurationSeconds] = useState(0);
+      const [currentSpeedKmh, setCurrentSpeedKmh] = useState(0);
+
+      // Chế độ mô phỏng
+      const [isSimulating, setIsSimulating] = useState(false);
+      const [gpsStatus, setGpsStatus] = useState('Đang khởi tạo GPS...');
+      
+      // Thời gian
+      const [startTime, setStartTime] = useState(null);
+      const [endTime, setEndTime] = useState(null);
+
+      // Modals
+      const [showInvoice, setShowInvoice] = useState(false);
+      const [showPricingModal, setShowPricingModal] = useState(false);
+
+      // Refs
+      const mapContainerRef = useRef(null);
+      const mapRef = useRef(null);
+      const polylineRef = useRef(null);
+      const currentMarkerRef = useRef(null);
+      const startMarkerRef = useRef(null);
+      const watchIdRef = useRef(null);
+      const timerRef = useRef(null);
+      const simIntervalRef = useRef(null);
+      const simIndexRef = useRef(0);
+
+      // --- Khởi tạo Bản đồ Leaflet ---
+      useEffect(() => {
+        if (!mapContainerRef.current) return;
+
+        const map = L.map(mapContainerRef.current, {
+          center: [currentPos.lat, currentPos.lng],
+          zoom: 16,
+          zoomControl: false,
+        });
+
+        // Các nguồn bản đồ chất lượng cao, miễn phí và không bị chặn 403
+        const baseMaps = {
+          "Google Maps": L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+            maxZoom: 20,
+            attribution: '&copy; Google Maps'
+          }),
+          "Bản đồ Voyager (OSM)": L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            subdomains: 'abcd',
+            maxZoom: 20,
+            attribution: '&copy; CARTO &copy; OpenStreetMap'
+          }),
+          "Ảnh Vệ Tinh": L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+            maxZoom: 20,
+            attribution: '&copy; Google Satellite'
+          })
+        };
+
+        // Kích hoạt mặc định Google Maps (rõ nét đường phố Việt Nam)
+        baseMaps["Google Maps"].addTo(map);
+
+        // Menu chuyển đổi kiểu bản đồ ở góc trên phải
+        L.control.layers(baseMaps, null, { position: 'topright' }).addTo(map);
+        L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+        // Đường vẽ lộ trình xanh ngọc
+        const polyline = L.polyline([], {
+          color: '#06b6d4',
+          weight: 5,
+          opacity: 0.9,
+          lineCap: 'round',
+          lineJoin: 'round',
+        }).addTo(map);
+
+        mapRef.current = map;
+        polylineRef.current = polyline;
+
+        return () => {
+          map.remove();
+          mapRef.current = null;
+        };
+      }, []);
+
+      // Cập nhật Marker vị trí hiện tại
+      useEffect(() => {
+        const map = mapRef.current;
+        if (!map || !currentPos) return;
+
+        const latLng = [currentPos.lat, currentPos.lng];
+
+        if (!currentMarkerRef.current) {
+          const pulseIcon = L.divIcon({
+            className: 'gps-pulse-marker',
+            html: '<div class="pulse-ring"></div><div class="core-dot"></div>',
+            iconSize: [44, 44],
+            iconAnchor: [22, 22],
+          });
+          currentMarkerRef.current = L.marker(latLng, { icon: pulseIcon }).addTo(map);
+          map.setView(latLng, 16);
+        } else {
+          currentMarkerRef.current.setLatLng(latLng);
+        }
+      }, [currentPos]);
+
+      // Cập nhật Marker điểm xuất phát
+      useEffect(() => {
+        const map = mapRef.current;
+        if (!map) return;
+
+        if (pathCoords.length > 0) {
+          const startPt = pathCoords[0];
+          const latLng = [startPt.lat, startPt.lng];
+
+          if (!startMarkerRef.current) {
+            const startIcon = L.divIcon({
+              className: 'start-marker',
+              html: `
+                <div style="background-color: #10b981; color: white; border-radius: 9999px; padding: 4px; border: 2px solid white; box-shadow: 0 4px 6px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; width: 28px; height: 28px;">
+                  <span style="font-size: 12px; font-weight: 800;">A</span>
+                </div>
+              `,
+              iconSize: [28, 28],
+              iconAnchor: [14, 14],
+            });
+            startMarkerRef.current = L.marker(latLng, { icon: startIcon }).addTo(map);
+          }
+        } else {
+          if (startMarkerRef.current) {
+            startMarkerRef.current.remove();
+            startMarkerRef.current = null;
+          }
+        }
+      }, [pathCoords]);
+
+      // Cập nhật đường vẽ lộ trình
+      useEffect(() => {
+        if (!polylineRef.current) return;
+        polylineRef.current.setLatLngs(pathCoords.map(p => [p.lat, p.lng]));
+      }, [pathCoords]);
+
+      // Lấy GPS ban đầu
+      useEffect(() => {
+        if ('geolocation' in navigator) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const { latitude, longitude, accuracy } = pos.coords;
+              const pt = { lat: latitude, lng: longitude, accuracy };
+              setCurrentPos(pt);
+              setGpsStatus(`GPS sẵn sàng (±${Math.round(accuracy)}m)`);
+              if (mapRef.current) {
+                mapRef.current.setView([latitude, longitude], 16);
+              }
+            },
+            (err) => {
+              setGpsStatus('GPS không phản hồi (Dùng toạ độ mặc định)');
+            },
+            { enableHighAccuracy: true, timeout: 8000 }
+          );
+        }
+      }, []);
+
+      // Đồng hồ bấm giờ (Timer)
+      useEffect(() => {
+        if (tripStatus === 'running') {
+          timerRef.current = setInterval(() => {
+            setDurationSeconds((prev) => prev + 1);
+          }, 1000);
+        } else {
+          if (timerRef.current) clearInterval(timerRef.current);
+        }
+        return () => {
+          if (timerRef.current) clearInterval(timerRef.current);
+        };
+      }, [tripStatus]);
+
+      // Tính tiền cước tự động ngay tại JS khi quãng đường hoặc loại xe thay đổi
+      useEffect(() => {
+        const result = calculateFare(rawDistanceKm, selectedVehicle, pricing);
+        setSteppedDistanceKm(result.steppedDistanceKm);
+        setTotalFare(result.totalFare);
+        setFareResult(result);
+      }, [rawDistanceKm, selectedVehicle, pricing]);
+
+      // GPS Watcher khi di chuyển thật trên đường
+      useEffect(() => {
+        if (tripStatus === 'running' && !isSimulating) {
+          if (!('geolocation' in navigator)) {
+            alert('Trình duyệt không hỗ trợ Geolocation!');
+            return;
+          }
+
+          watchIdRef.current = navigator.geolocation.watchPosition(
+            (pos) => {
+              const { latitude, longitude, accuracy, speed } = pos.coords;
+              const newPt = {
+                lat: latitude,
+                lng: longitude,
+                accuracy: accuracy || 10,
+                timestamp: pos.timestamp,
+                speed: speed || 0
+              };
+
+              setCurrentPos(newPt);
+              setGpsStatus(`GPS hoạt động (±${Math.round(accuracy || 0)}m)`);
+              if (speed && speed > 0) setCurrentSpeedKmh(speed * 3.6);
+
+              if (mapRef.current) {
+                mapRef.current.panTo([latitude, longitude], { animate: true });
+              }
+
+              setPathCoords((prev) => {
+                if (prev.length === 0) return [newPt];
+                const last = prev[prev.length - 1];
+                const distKm = haversineDistance(last.lat, last.lng, newPt.lat, newPt.lng);
+                const distMeters = distKm * 1000;
+
+                // Lọc nhiễu dừng xe (< 3m) hoặc sai lệch lớn (> 50m)
+                if (distMeters < 3 || (accuracy && accuracy > 50)) {
+                  return prev;
+                }
+
+                setRawDistanceKm((d) => d + distKm);
+                return [...prev, newPt];
+              });
+            },
+            (err) => {
+              setGpsStatus(`Lỗi GPS: ${err.message}`);
+            },
+            { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+          );
+        } else {
+          if (watchIdRef.current !== null) {
+            navigator.geolocation.clearWatch(watchIdRef.current);
+            watchIdRef.current = null;
+          }
+        }
+        return () => {
+          if (watchIdRef.current !== null) {
+            navigator.geolocation.clearWatch(watchIdRef.current);
+            watchIdRef.current = null;
+          }
+        };
+      }, [tripStatus, isSimulating]);
+
+      // Chế độ chạy thử / Mô phỏng GPS trên máy tính
+      useEffect(() => {
+        if (tripStatus === 'running' && isSimulating) {
+          simIntervalRef.current = setInterval(() => {
+            simIndexRef.current = (simIndexRef.current + 1) % SIMULATION_ROUTE.length;
+            const target = SIMULATION_ROUTE[simIndexRef.current];
+            const simPt = {
+              lat: target.lat + (Math.random() - 0.5) * 0.0001,
+              lng: target.lng + (Math.random() - 0.5) * 0.0001,
+              accuracy: 5,
+              timestamp: Date.now(),
+              speed: 8.5
+            };
+
+            setCurrentPos(simPt);
+            setCurrentSpeedKmh(28 + Math.random() * 6);
+
+            if (mapRef.current) {
+              mapRef.current.panTo([simPt.lat, simPt.lng], { animate: true });
+            }
+
+            setPathCoords((prev) => {
+              if (prev.length === 0) return [simPt];
+              const last = prev[prev.length - 1];
+              const distKm = haversineDistance(last.lat, last.lng, simPt.lat, simPt.lng);
+              setRawDistanceKm((d) => d + distKm);
+              return [...prev, simPt];
+            });
+          }, 1500);
+        } else {
+          if (simIntervalRef.current) clearInterval(simIntervalRef.current);
+        }
+        return () => {
+          if (simIntervalRef.current) clearInterval(simIntervalRef.current);
+        };
+      }, [tripStatus, isSimulating]);
+
+      // Điều khiển chuyến đi
+      const handleStart = () => {
+        setStartTime(new Date());
+        setEndTime(null);
+        setTripStatus('running');
+        setRawDistanceKm(0.0);
+        setSteppedDistanceKm(0.0);
+        setTotalFare(0);
+        setDurationSeconds(0);
+        setPathCoords([currentPos]);
+      };
+
+      const handlePause = () => {
+        setTripStatus('paused');
+        setCurrentSpeedKmh(0);
+      };
+
+      const handleResume = () => {
+        setTripStatus('running');
+      };
+
+      const handleFinish = () => {
+        setEndTime(new Date());
+        setTripStatus('finished');
+        setCurrentSpeedKmh(0);
+        
+        // Tính cước hoá đơn chính thức
+        const finalFare = calculateFare(rawDistanceKm, selectedVehicle, pricing);
+        setFareResult(finalFare);
+        setShowInvoice(true);
+      };
+
+      const handleReset = () => {
+        setTripStatus('idle');
+        setPathCoords([]);
+        setRawDistanceKm(0.0);
+        setSteppedDistanceKm(0.0);
+        setTotalFare(0);
+        setDurationSeconds(0);
+        setCurrentSpeedKmh(0);
+        setStartTime(null);
+        setEndTime(null);
+        setFareResult(null);
+      };
+
+      const handleRecenter = () => {
+        if (mapRef.current && currentPos) {
+          mapRef.current.setView([currentPos.lat, currentPos.lng], 16, { animate: true });
+        }
+      };
+
+      return (
+        <div className="min-h-screen flex flex-col font-sans">
+          {/* Header */}
+          <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur-md sticky top-0 z-40 px-4 py-3">
+            <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-500 shadow-md shadow-emerald-950/40 text-white">
+                  <Icons.Navigation />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h1 className="text-lg md:text-xl font-black tracking-tight text-white">
+                      Distance<span className="text-emerald-400">Meter</span>
+                    </h1>
+                    <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                      Step 0.1 KM (JS Pure)
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">Đồng hồ GPS & Tính cước trực tiếp tại trình duyệt</p>
+                </div>
+              </div>
+
+              {/* Lựa chọn phương tiện & Bảng giá */}
+              <div className="flex items-center gap-2.5">
+                <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-xl px-3 py-1.5 text-xs">
+                  <span className="text-slate-400">Loại xe:</span>
+                  <select
+                    value={selectedVehicle}
+                    onChange={(e) => setSelectedVehicle(e.target.value)}
+                    disabled={tripStatus === 'running'}
+                    className="bg-transparent text-emerald-400 font-bold focus:outline-none cursor-pointer"
+                  >
+                    {Object.entries(pricing.vehicles).map(([k, v]) => (
+                      <option key={k} value={k} className="bg-slate-900 text-white">
+                        {v.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <button
+                  onClick={() => setShowPricingModal(true)}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-300 hover:text-white transition-all"
+                >
+                  <Icons.FileText />
+                  <span className="hidden sm:inline">Bảng giá cước</span>
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {/* Main Layout */}
+          <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-5 space-y-4">
+            {/* GPS Status Bar */}
+            <div className="flex items-center justify-between text-xs px-2 text-slate-400">
+              <div className="flex items-center gap-2">
+                <span className={`w-2.5 h-2.5 rounded-full ${
+                  isSimulating ? 'bg-purple-500 animate-pulse' :
+                  tripStatus === 'running' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'
+                }`} />
+                <span>{isSimulating ? 'Đang mô phỏng xe chạy quanh Hồ Gươm' : gpsStatus}</span>
+              </div>
+              {tripStatus === 'running' && (
+                <div className="text-emerald-400 font-semibold animate-pulse">
+                  ● Đang ghi nhận lộ trình GPS
+                </div>
+              )}
+            </div>
+
+            {/* Dashboard 4 Thẻ Metric */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
+              {/* Quãng đường (Step 0.1) */}
+              <div className="bg-slate-800/90 rounded-2xl p-4 md:p-5 border border-cyan-500/20 shadow-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs md:text-sm font-medium text-slate-400">Quãng đường</span>
+                  <div className="p-2 rounded-xl bg-cyan-500/10 text-cyan-400">
+                    <Icons.Route />
+                  </div>
+                </div>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-3xl md:text-4xl font-extrabold text-white font-mono">
+                    {steppedDistanceKm.toFixed(1)}
+                  </span>
+                  <span className="text-sm font-semibold text-cyan-400">km</span>
+                </div>
+                <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
+                  <span>Gốc: {rawDistanceKm.toFixed(3)} km</span>
+                  <span className="text-cyan-400 font-medium bg-cyan-500/10 px-1.5 py-0.5 rounded">
+                    Step 0.1 km
+                  </span>
+                </div>
+              </div>
+
+              {/* Tạm tính cước */}
+              <div className="bg-slate-800/90 rounded-2xl p-4 md:p-5 border border-emerald-500/30 shadow-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs md:text-sm font-semibold text-emerald-400">Tạm tính tiền cước</span>
+                  <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400">
+                    <Icons.Coins />
+                  </div>
+                </div>
+                <div className="text-2xl md:text-3xl font-black text-emerald-400 font-mono">
+                  {formatVND(totalFare)}
+                </div>
+                <div className="mt-1 text-[11px] text-slate-400">
+                  Tính tự động theo bậc thang
+                </div>
+              </div>
+
+              {/* Thời gian */}
+              <div className="bg-slate-800/90 rounded-2xl p-4 md:p-5 border border-slate-700/60 shadow-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs md:text-sm font-medium text-slate-400">Thời gian</span>
+                  <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400">
+                    <Icons.Clock />
+                  </div>
+                </div>
+                <div className="text-2xl md:text-3xl font-extrabold text-white font-mono">
+                  {formatTime(durationSeconds)}
+                </div>
+                <div className="mt-1 text-[11px] text-slate-400 flex items-center gap-1.5">
+                  <span className={`w-2 h-2 rounded-full ${tripStatus === 'running' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-500'}`}></span>
+                  <span>{tripStatus === 'running' ? 'Đang đo' : 'Dừng'}</span>
+                </div>
+              </div>
+
+              {/* Tốc độ tức thời */}
+              <div className="bg-slate-800/90 rounded-2xl p-4 md:p-5 border border-slate-700/60 shadow-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs md:text-sm font-medium text-slate-400">Tốc độ tức thời</span>
+                  <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400">
+                    <Icons.Gauge />
+                  </div>
+                </div>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-3xl md:text-4xl font-extrabold text-white font-mono">
+                    {currentSpeedKmh.toFixed(0)}
+                  </span>
+                  <span className="text-sm font-semibold text-indigo-400">km/h</span>
+                </div>
+                <div className="mt-1 text-[11px] text-slate-400">
+                  Từ cảm biến GPS
+                </div>
+              </div>
+            </div>
+
+            {/* Thanh điều khiển */}
+            <div className="bg-slate-800/90 rounded-2xl p-4 border border-slate-700/60 shadow-xl flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                {tripStatus === 'idle' && (
+                  <button
+                    onClick={handleStart}
+                    className="flex items-center gap-2 px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-lg shadow-emerald-950/40 transition-all active:scale-95"
+                  >
+                    <Icons.Play />
+                    <span>Bắt đầu chuyến đi</span>
+                  </button>
+                )}
+
+                {tripStatus === 'running' && (
+                  <>
+                    <button
+                      onClick={handlePause}
+                      className="flex items-center gap-2 px-5 py-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold shadow-lg transition-all active:scale-95"
+                    >
+                      <Icons.Pause />
+                      <span>Tạm dừng</span>
+                    </button>
+                    <button
+                      onClick={handleFinish}
+                      className="flex items-center gap-2 px-6 py-3 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold shadow-lg shadow-red-950/40 transition-all active:scale-95"
+                    >
+                      <Icons.Stop />
+                      <span>Kết thúc & Tính tiền</span>
+                    </button>
+                  </>
+                )}
+
+                {tripStatus === 'paused' && (
+                  <>
+                    <button
+                      onClick={handleResume}
+                      className="flex items-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-lg transition-all active:scale-95"
+                    >
+                      <Icons.Play />
+                      <span>Tiếp tục di chuyển</span>
+                    </button>
+                    <button
+                      onClick={handleFinish}
+                      className="flex items-center gap-2 px-6 py-3 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold shadow-lg shadow-red-950/40 transition-all active:scale-95"
+                    >
+                      <Icons.Stop />
+                      <span>Kết thúc & Tính tiền</span>
+                    </button>
+                  </>
+                )}
+
+                {tripStatus === 'finished' && (
+                  <button
+                    onClick={handleReset}
+                    className="flex items-center gap-2 px-6 py-3 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-bold shadow-lg transition-all active:scale-95"
+                  >
+                    <Icons.Reset />
+                    <span>Bắt đầu chuyến mới</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Nút bật/tắt Chế độ Giả lập trên máy tính */}
+              <button
+                onClick={() => setIsSimulating(!isSimulating)}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold border transition-all ${
+                  isSimulating
+                    ? 'bg-purple-600/30 border-purple-500 text-purple-300 shadow-lg'
+                    : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
+                }`}
+              >
+                <Icons.Sparkles />
+                <span>{isSimulating ? 'Đang bật mô phỏng GPS' : 'Mô phỏng GPS (Test máy tính)'}</span>
+              </button>
+            </div>
+
+            {/* Khung bản đồ Leaflet */}
+            <div className="relative w-full h-[440px] md:h-[520px] rounded-2xl overflow-hidden shadow-2xl border border-slate-700/60 bg-slate-900">
+              <div ref={mapContainerRef} className="w-full h-full" />
+
+              {/* Nút căn giữa nhanh */}
+              <div className="absolute top-4 right-4 z-[400]">
+                <button
+                  onClick={handleRecenter}
+                  title="Căn giữa vị trí hiện tại"
+                  className="p-2.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-cyan-400 border border-slate-700 shadow-lg backdrop-blur-md transition-all active:scale-95"
+                >
+                  <Icons.Crosshair />
+                </button>
+              </div>
+
+              {/* Chú giải bản đồ */}
+              <div className="absolute bottom-4 left-4 z-[400] bg-slate-900/90 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-700 text-xs text-slate-300 shadow-lg flex items-center gap-3">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-3 h-3 rounded-full bg-emerald-500 border border-white"></span>
+                  <span>Điểm đầu</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-4 h-1 rounded bg-cyan-400"></span>
+                  <span>Đoạn đường di chuyển</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-cyan-500 animate-ping"></span>
+                  <span>Vị trí hiện tại</span>
+                </div>
+              </div>
+            </div>
+          </main>
+
+          {/* Footer */}
+          <footer className="border-t border-slate-900 py-3 text-center text-xs text-slate-500">
+            DistanceMeter • 100% Client-side JavaScript • Step 0.1 KM • OpenStreetMap Leaflet
+          </footer>
+
+          {/* ================================================================= */}
+          {/* MODAL HOÁ ĐƠN / BIÊN LAI TÍNH TIỀN */}
+          {/* ================================================================= */}
+          {showInvoice && fareResult && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+              <div id="printable-receipt" className="relative w-full max-w-lg bg-slate-900 border border-slate-700 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+                {/* Header Hoá đơn */}
+                <div className="p-6 bg-gradient-to-r from-emerald-600 to-teal-700 text-white flex items-center justify-between">
+                  <div>
+                    <h2 className="text-xl font-black">BIÊN LAI CƯỚC CHUYẾN ĐI</h2>
+                    <p className="text-xs text-emerald-100">Đồng hồ GPS tính cước chuẩn xác theo quy định</p>
+                  </div>
+                  <button
+                    onClick={() => setShowInvoice(false)}
+                    className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all"
+                  >
+                    <Icons.Close />
+                  </button>
+                </div>
+
+                {/* Nội dung Hoá đơn */}
+                <div className="p-6 overflow-y-auto space-y-4 text-slate-200">
+                  <div className="grid grid-cols-2 gap-3 p-4 rounded-2xl bg-slate-800/60 border border-slate-700/50 text-xs">
+                    <div>
+                      <span className="text-slate-400">Phương tiện:</span>
+                      <p className="font-semibold text-slate-100 text-sm mt-0.5">{fareResult.vehicleName}</p>
+                    </div>
+                    <div>
+                      <span className="text-slate-400">Thời gian di chuyển:</span>
+                      <p className="font-semibold text-slate-100 text-sm mt-0.5">{formatTime(durationSeconds)}</p>
+                    </div>
+                    <div>
+                      <span className="text-slate-400">Bắt đầu:</span>
+                      <p className="font-medium text-slate-200 mt-0.5">
+                        {startTime ? startTime.toLocaleTimeString('vi-VN') : '--:--'}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-slate-400">Kết thúc:</span>
+                      <p className="font-medium text-slate-200 mt-0.5">
+                        {endTime ? endTime.toLocaleTimeString('vi-VN') : '--:--'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Quãng đường & quy chuẩn step 0.1 */}
+                  <div className="p-4 rounded-2xl bg-cyan-950/30 border border-cyan-800/40 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs text-cyan-300 font-medium">Quãng đường tính cước:</span>
+                      <div className="text-2xl font-black text-cyan-400 font-mono">
+                        {fareResult.steppedDistanceKm.toFixed(1)} km
+                      </div>
+                    </div>
+                    <div className="text-right text-xs text-slate-400">
+                      <p>GPS thô: {fareResult.rawDistanceKm.toFixed(3)} km</p>
+                      <p className="text-cyan-400 font-semibold mt-0.5">Bước nhảy: 0.1 km</p>
+                    </div>
+                  </div>
+
+                  {/* Chi tiết từng bậc tính cước */}
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                      Chi tiết các bậc tính tiền
+                    </h3>
+                    <div className="border border-slate-700 rounded-2xl overflow-hidden divide-y divide-slate-800 text-xs">
+                      {fareResult.breakdown.map((item, idx) => (
+                        <div key={idx} className="p-3 bg-slate-800/40 flex items-center justify-between">
+                          <div>
+                            <p className="font-semibold text-slate-100">{item.stepName}</p>
+                            <p className="text-slate-400 text-[11px]">
+                              {item.distanceKm} km × {formatVND(item.rate)}
+                            </p>
+                          </div>
+                          <span className="font-bold text-slate-200 font-mono text-sm">
+                            {formatVND(item.subtotal)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Tổng tiền thanh toán */}
+                  <div className="p-5 rounded-2xl bg-gradient-to-r from-emerald-950/60 to-slate-900 border-2 border-emerald-500/50 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs text-emerald-300 font-bold uppercase">Tổng cước thanh toán</span>
+                      <p className="text-[11px] text-slate-400">Đã bao gồm thuế và các bậc cước</p>
+                    </div>
+                    <div className="text-3xl font-black text-emerald-400 font-mono">
+                      {formatVND(fareResult.totalFare)}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Footer Buttons */}
+                <div className="p-4 bg-slate-800 border-t border-slate-700 flex justify-end gap-3">
+                  <button
+                    onClick={() => window.print()}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 font-medium text-xs transition-all"
+                  >
+                    <Icons.Printer />
+                    <span>In biên lai</span>
+                  </button>
+                  <button
+                    onClick={() => setShowInvoice(false)}
+                    className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition-all"
+                  >
+                    Đóng
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* MODAL BẢNG GIÁ NIÊM YẾT */}
+          {/* ================================================================= */}
+          {showPricingModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+              <div className="relative w-full max-w-2xl bg-slate-900 border border-slate-700 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+                <div className="p-6 bg-slate-800 border-b border-slate-700 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 rounded-2xl bg-cyan-500/10 text-cyan-400">
+                      <Icons.FileText />
+                    </div>
+                    <div>
+                      <h2 className="text-lg font-bold text-white">BẢNG GIÁ CƯỚC NIÊM YẾT</h2>
+                      <p className="text-xs text-slate-400">
+                        Cấu hình quy chuẩn bước nhảy: {pricing.step_km} km (100 mét)
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowPricingModal(false)}
+                    className="p-2 rounded-xl bg-slate-700/60 hover:bg-slate-700 text-slate-400 hover:text-white transition-all"
+                  >
+                    <Icons.Close />
+                  </button>
+                </div>
+
+                <div className="p-6 overflow-y-auto space-y-4 text-slate-200">
+                  <div className="p-3.5 rounded-xl bg-cyan-950/20 border border-cyan-800/40 text-xs text-cyan-200 leading-relaxed">
+                    💡 <b>Quy tắc tính toán:</b> Quãng đường GPS thực tế sau khi lọc nhiễu sẽ được làm tròn theo 
+                    bước nhảy <b>{pricing.step_km} km</b>, sau đó tính tiền lũy tiến theo từng bậc cước bên dưới.
+                  </div>
+
+                  <div className="space-y-4">
+                    {Object.entries(pricing.vehicles).map(([k, v]) => (
+                      <div key={k} className="p-4 rounded-2xl bg-slate-800/60 border border-slate-700">
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <h3 className="text-base font-bold text-white">{v.name}</h3>
+                            <p className="text-xs text-slate-400">{v.description}</p>
+                          </div>
+                          <span className="text-xs px-2.5 py-1 rounded-full bg-slate-700 font-semibold text-emerald-400">
+                            Mở cửa: {formatVND(v.base_fare)} / {v.base_distance_km} km
+                          </span>
+                        </div>
+
+                        <div className="border border-slate-700 rounded-xl overflow-hidden divide-y divide-slate-800 text-xs">
+                          <div className="p-2.5 bg-slate-800 font-semibold text-slate-300 flex justify-between">
+                            <span>Mốc khoảng cách</span>
+                            <span>Đơn giá</span>
+                          </div>
+                          <div className="p-2.5 bg-slate-900/40 flex justify-between text-slate-300">
+                            <span>0 đến {v.base_distance_km} km đầu tiên</span>
+                            <span className="font-mono text-emerald-400">{formatVND(v.base_fare)} (Trọn gói)</span>
+                          </div>
+                          {v.tiers.map((t, idx) => (
+                            <div key={idx} className="p-2.5 bg-slate-900/20 flex justify-between text-slate-300">
+                              <span>{t.description}</span>
+                              <span className="font-mono text-cyan-300">{formatVND(t.price_per_km)}/km</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="p-4 bg-slate-800 border-t border-slate-700 flex justify-end">
+                  <button
+                    onClick={() => setShowPricingModal(false)}
+                    className="px-5 py-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold text-xs transition-all"
+                  >
+                    Đóng
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Render App
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
+
