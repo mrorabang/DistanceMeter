@@ -19,6 +19,10 @@
   <!-- Babel Standalone để biên dịch JSX trực tiếp trên trình duyệt -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
+  <!-- Firebase SDK v10 (Compat) -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
   <style>
     /* Tùy chỉnh bản đồ Leaflet */
     .leaflet-container {
@@ -114,6 +118,325 @@
   <!-- SCRIPT XỬ LÝ TOÀN BỘ 100% TRONG JAVASCRIPT (KHÔNG CẦN BACKEND) -->
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
+
+    // =========================================================================
+    // 0. CẤU HÌNH & KHỞI TẠO FIREBASE FIRESTORE
+    // =========================================================================
+    const firebaseConfig = {
+      apiKey: "AIzaSyBmhklf4tXVrszKLIx9-spIH1l0d7lYmY4",
+      authDomain: "distancemeter-b7a3a.firebaseapp.com",
+      projectId: "distancemeter-b7a3a",
+      storageBucket: "distancemeter-b7a3a.firebasestorage.app",
+      messagingSenderId: "929831445439",
+      appId: "1:929831445439:web:83ae947f02f3ff7c37f70a",
+      measurementId: "G-HEEKGZPNEL"
+    };
+
+    let db = null;
+    let isFirebaseReady = false;
+    try {
+      if (typeof firebase !== 'undefined') {
+        if (!firebase.apps || !firebase.apps.length) {
+          firebase.initializeApp(firebaseConfig);
+        }
+        db = firebase.firestore();
+        isFirebaseReady = true;
+      }
+    } catch (err) {
+      console.warn("Khởi tạo Firebase Firestore:", err);
+    }
+
+    // Định dạng ngày giờ chuyến đi (VD: 16/10/2026 14:45:30)
+    function formatTripDate(d = new Date()) {
+      const pad = (n) => n.toString().padStart(2, '0');
+      const day = pad(d.getDate());
+      const month = pad(d.getMonth() + 1);
+      const year = d.getFullYear();
+      const hours = pad(d.getHours());
+      const minutes = pad(d.getMinutes());
+      const seconds = pad(d.getSeconds());
+      return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+    }
+
+    // =========================================================================
+    // HÀM TẠO ẢNH SNAPSHOT LỘ TRÌNH GPS (CANVAS CLIENT-SIDE -> BASE64 DATA URL)
+    // =========================================================================
+    function generateRouteSnapshot(coords, width = 540, height = 320, options = {}) {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+
+      // 1. Nền bản đồ tối sang trọng
+      const bgGrad = ctx.createLinearGradient(0, 0, width, height);
+      bgGrad.addColorStop(0, '#090d16');
+      bgGrad.addColorStop(1, '#0f172a');
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(0, 0, width, height);
+
+      // 2. Lưới toạ độ bản đồ (Grid lines)
+      ctx.strokeStyle = 'rgba(51, 65, 85, 0.35)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      const gridSize = 45;
+      for (let x = gridSize; x < width; x += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+      for (let y = gridSize; y < height; y += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      const validCoords = (coords && coords.length > 0) ? coords : [];
+
+      if (validCoords.length === 0) {
+        // Chưa có toạ độ -> Vẽ radar tâm
+        ctx.fillStyle = '#06b6d4';
+        ctx.beginPath();
+        ctx.arc(width / 2, height / 2, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(6, 182, 212, 0.4)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(width / 2, height / 2, 32, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (validCoords.length === 1) {
+        // 1 toạ độ GPS
+        const cx = width / 2;
+        const cy = height / 2;
+        ctx.fillStyle = '#10b981';
+        ctx.beginPath();
+        ctx.arc(cx, cy, 14, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('A', cx, cy);
+      } else {
+        // Nhiều toạ độ -> Tính bounding box và vẽ đường lộ trình
+        let minLat = Infinity, maxLat = -Infinity;
+        let minLng = Infinity, maxLng = -Infinity;
+        validCoords.forEach(p => {
+          if (p.lat < minLat) minLat = p.lat;
+          if (p.lat > maxLat) maxLat = p.lat;
+          if (p.lng < minLng) minLng = p.lng;
+          if (p.lng > maxLng) maxLng = p.lng;
+        });
+
+        const dLat = Math.max(maxLat - minLat, 0.0004);
+        const dLng = Math.max(maxLng - minLng, 0.0004);
+        const padX = 60;
+        const padY = 55;
+
+        const toScreen = (p) => {
+          const x = padX + ((p.lng - minLng) / dLng) * (width - 2 * padX);
+          const y = height - (padY + ((p.lat - minLat) / dLat) * (height - 2 * padY));
+          return { x, y };
+        };
+
+        // Lớp phát quang xanh ngọc (Cyan glow)
+        ctx.save();
+        ctx.shadowColor = 'rgba(6, 182, 212, 0.85)';
+        ctx.shadowBlur = 12;
+        ctx.strokeStyle = '#06b6d4';
+        ctx.lineWidth = 5.5;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        validCoords.forEach((p, idx) => {
+          const pt = toScreen(p);
+          if (idx === 0) ctx.moveTo(pt.x, pt.y);
+          else ctx.lineTo(pt.x, pt.y);
+        });
+        ctx.stroke();
+        ctx.restore();
+
+        // Lớp đường polyline sáng bên trong
+        ctx.strokeStyle = '#67e8f9';
+        ctx.lineWidth = 2.5;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        validCoords.forEach((p, idx) => {
+          const pt = toScreen(p);
+          if (idx === 0) ctx.moveTo(pt.x, pt.y);
+          else ctx.lineTo(pt.x, pt.y);
+        });
+        ctx.stroke();
+
+        // Marker A (Điểm khởi hành)
+        const pStart = toScreen(validCoords[0]);
+        ctx.fillStyle = '#10b981';
+        ctx.beginPath();
+        ctx.arc(pStart.x, pStart.y, 13, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('A', pStart.x, pStart.y);
+
+        // Marker B (Điểm kết thúc)
+        const pEnd = toScreen(validCoords[validCoords.length - 1]);
+        ctx.fillStyle = '#ef4444';
+        ctx.beginPath();
+        ctx.arc(pEnd.x, pEnd.y, 13, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('B', pEnd.x, pEnd.y);
+      }
+
+      // Watermark góc trên
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+      ctx.strokeStyle = 'rgba(51, 65, 85, 0.7)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(16, 14, 190, 28, 8);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#22d3ee';
+      ctx.beginPath();
+      ctx.arc(28, 28, 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#f1f5f9';
+      ctx.font = 'bold 11px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('DistanceMeter • GPS Track', 38, 28);
+
+      // Badge hiển thị khoảng cách và tổng tiền ở đáy ảnh
+      if (options.distance !== undefined || options.totalFareFormatted !== undefined) {
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+        ctx.strokeStyle = 'rgba(51, 65, 85, 0.8)';
+        ctx.beginPath();
+        ctx.roundRect(16, height - 44, width - 32, 30, 8);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#38bdf8';
+        ctx.font = 'bold 12px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        const distText = `Lộ trình: ${options.distance !== undefined ? options.distance : '--'} km`;
+        ctx.fillText(distText, 26, height - 29);
+
+        if (options.totalFareFormatted) {
+          ctx.fillStyle = '#34d399';
+          ctx.font = 'bold 12px monospace';
+          ctx.textAlign = 'right';
+          ctx.fillText(options.totalFareFormatted, width - 26, height - 29);
+        }
+      }
+
+      return canvas.toDataURL('image/png');
+    }
+
+    // =========================================================================
+    // CÁC HÀM TƯƠNG TÁC VỚI FIREBASE FIRESTORE & DỰ PHÒNG LOCALSTORAGE
+    // =========================================================================
+    async function saveTripToDb(tripData) {
+      // 1. Lưu dự phòng vào localStorage
+      try {
+        const local = JSON.parse(localStorage.getItem('distancemeter_trips') || '[]');
+        const updated = [tripData, ...local.filter(t => t.stt !== tripData.stt)];
+        localStorage.setItem('distancemeter_trips', JSON.stringify(updated));
+      } catch (e) {
+        console.warn("Lỗi lưu localStorage:", e);
+      }
+
+      // 2. Lưu vào Cloud Firestore collection 'trips'
+      if (db) {
+        try {
+          const docRef = await db.collection('trips').add(tripData);
+          return { success: true, id: docRef.id, from: 'firebase' };
+        } catch (err) {
+          console.warn("Lỗi ghi Cloud Firestore (dùng dữ liệu lưu máy):", err);
+          return { success: true, id: 'local_' + Date.now(), from: 'local', error: err.message };
+        }
+      }
+      return { success: true, id: 'local_' + Date.now(), from: 'local' };
+    }
+
+    async function fetchTripsFromDb() {
+      let localTrips = [];
+      try {
+        localTrips = JSON.parse(localStorage.getItem('distancemeter_trips') || '[]');
+      } catch (e) {
+        localTrips = [];
+      }
+
+      if (!db) return localTrips;
+
+      try {
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Firebase timeout')), 5000)
+        );
+        const fetchPromise = db.collection('trips').orderBy('stt', 'desc').get();
+        const snapshot = await Promise.race([fetchPromise, timeoutPromise]);
+
+        const fbTrips = [];
+        snapshot.forEach(doc => {
+          fbTrips.push({ id: doc.id, ...doc.data() });
+        });
+
+        if (fbTrips.length > 0) {
+          try {
+            localStorage.setItem('distancemeter_trips', JSON.stringify(fbTrips));
+          } catch (e) {}
+          return fbTrips;
+        }
+        return localTrips;
+      } catch (err) {
+        console.warn("Không thể tải từ Cloud Firestore (Dùng dữ liệu local):", err);
+        return localTrips;
+      }
+    }
+
+    async function deleteTripFromDb(trip) {
+      try {
+        const local = JSON.parse(localStorage.getItem('distancemeter_trips') || '[]');
+        const filtered = local.filter(t => {
+          if (trip.id && t.id === trip.id) return false;
+          if (trip.stt && t.stt === trip.stt) return false;
+          return true;
+        });
+        localStorage.setItem('distancemeter_trips', JSON.stringify(filtered));
+      } catch (e) {}
+
+      if (db) {
+        try {
+          if (trip.id) {
+            await db.collection('trips').doc(trip.id).delete();
+          } else if (trip.stt) {
+            const q = await db.collection('trips').where('stt', '==', trip.stt).get();
+            q.forEach(doc => doc.ref.delete());
+          }
+        } catch (err) {
+          console.warn("Lỗi xoá trên Firestore:", err);
+        }
+      }
+    }
 
     // =========================================================================
     // 1. CẤU HÌNH BẢNG GIÁ CỐ ĐỊNH & BƯỚC NHẢY (STEP 0.1 KM)
@@ -366,6 +689,43 @@
           <line x1="18" y1="6" x2="6" y2="18"/>
           <line x1="6" y1="6" x2="18" y2="18"/>
         </svg>
+      ),
+      History: () => (
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+          <path d="M3 3v5h5"/>
+          <polyline points="12 7 12 12 15 15"/>
+        </svg>
+      ),
+      Trash: () => (
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <polyline points="3 6 5 6 21 6"/>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+        </svg>
+      ),
+      Download: () => (
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+      ),
+      Eye: () => (
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/>
+          <circle cx="12" cy="12" r="3"/>
+        </svg>
+      ),
+      CloudCheck: () => (
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+          <polyline points="9 13 11 15 15 11"/>
+        </svg>
+      ),
+      Refresh: () => (
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+        </svg>
       )
     };
 
@@ -481,6 +841,258 @@
     }
 
     // =========================================================================
+    // MODAL LỊCH SỬ CÁC CHUYẾN ĐI (FIREBASE + LOCAL CACHE)
+    // =========================================================================
+    function HistoryModal({
+      isOpen,
+      onClose,
+      trips,
+      loading,
+      onRefresh,
+      onDeleteTrip,
+      onViewInvoice,
+      onPreviewImage
+    }) {
+      if (!isOpen) return null;
+
+      const totalKm = trips.reduce((sum, t) => sum + (Number(t.distance) || 0), 0);
+      const totalRevenue = trips.reduce((sum, t) => sum + (Number(t.total_fare) || 0), 0);
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm">
+          <div className="relative w-full max-w-4xl bg-slate-900 border border-slate-700 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="p-5 sm:p-6 bg-slate-800 border-b border-slate-700 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-2xl bg-emerald-500/10 text-emerald-400">
+                  <Icons.History />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-lg sm:text-xl font-black text-white">LỊCH SỬ CÁC CHUYẾN ĐI</h2>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-bold border border-emerald-500/30">
+                      {trips.length} chuyến
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-0.5 text-xs text-slate-400">
+                    <span className="flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                      <span>Firebase: <code className="text-emerald-300 font-mono">distancemeter-b7a3a</code></span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={onRefresh}
+                  disabled={loading}
+                  title="Làm mới từ Firebase"
+                  className="p-2 sm:px-3 sm:py-2 rounded-xl bg-slate-700/70 hover:bg-slate-700 text-slate-200 hover:text-white transition-all text-xs font-semibold flex items-center gap-1.5"
+                >
+                  <span className={loading ? "animate-spin" : ""}>
+                    <Icons.Refresh />
+                  </span>
+                  <span className="hidden sm:inline">Làm mới</span>
+                </button>
+                <button
+                  onClick={onClose}
+                  className="p-2 rounded-xl bg-slate-700/60 hover:bg-slate-700 text-slate-400 hover:text-white transition-all"
+                >
+                  <Icons.Close />
+                </button>
+              </div>
+            </div>
+
+            {/* Thống kê nhanh */}
+            <div className="grid grid-cols-3 gap-2 sm:gap-3 p-4 sm:p-5 bg-slate-950/50 border-b border-slate-800 text-xs">
+              <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60">
+                <span className="text-slate-400 block text-[11px]">Tổng chuyến:</span>
+                <span className="text-base sm:text-lg font-black text-white font-mono mt-0.5 block">
+                  {trips.length}
+                </span>
+              </div>
+              <div className="p-3 rounded-xl bg-cyan-950/30 border border-cyan-800/40">
+                <span className="text-cyan-400 block text-[11px]">Tổng quãng đường:</span>
+                <span className="text-base sm:text-lg font-black text-cyan-400 font-mono mt-0.5 block">
+                  {totalKm.toFixed(1)} km
+                </span>
+              </div>
+              <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-800/40">
+                <span className="text-emerald-400 block text-[11px]">Tổng tiền cước:</span>
+                <span className="text-base sm:text-lg font-black text-emerald-400 font-mono mt-0.5 block truncate">
+                  {formatVND(totalRevenue)}
+                </span>
+              </div>
+            </div>
+
+            {/* Nội dung danh sách chuyến */}
+            <div className="p-4 sm:p-6 overflow-y-auto space-y-3 flex-1">
+              {loading && trips.length === 0 ? (
+                <div className="py-12 text-center text-slate-400 space-y-2">
+                  <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                  <p className="text-xs">Đang tải lịch sử từ Firebase Cloud...</p>
+                </div>
+              ) : trips.length === 0 ? (
+                <div className="py-12 text-center text-slate-400 space-y-3">
+                  <div className="w-14 h-14 rounded-2xl bg-slate-800 flex items-center justify-center mx-auto text-slate-500">
+                    <Icons.Route />
+                  </div>
+                  <p className="font-semibold text-slate-300">Chưa có chuyến đi nào được lưu</p>
+                  <p className="text-xs max-w-sm mx-auto text-slate-500">
+                    Hãy bấm "Bắt đầu chuyến đi" và sau đó "Kết thúc & Tính tiền", dữ liệu gồm STT, ngày giờ, số km, ảnh lộ trình và tổng tiền sẽ tự động lưu vào Firebase.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {trips.map((t, idx) => (
+                    <div
+                      key={t.id || t.stt || idx}
+                      className="p-3.5 sm:p-4 rounded-2xl bg-slate-800/70 border border-slate-700/80 hover:border-slate-600 transition-all flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md"
+                    >
+                      {/* Cột trái: STT, hình ảnh snapshot & thông tin */}
+                      <div className="flex items-start sm:items-center gap-3 w-full sm:w-auto">
+                        {/* STT badge */}
+                        <div className="flex flex-col items-center justify-center min-w-[40px] h-10 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-black text-xs font-mono">
+                          <span className="text-[9px] uppercase tracking-wider text-emerald-300">STT</span>
+                          <span>#{t.stt || idx + 1}</span>
+                        </div>
+
+                        {/* Hình ảnh lộ trình (img) */}
+                        {t.img ? (
+                          <div
+                            onClick={() => onPreviewImage(t.img)}
+                            className="relative group cursor-pointer w-20 h-14 rounded-xl overflow-hidden border border-slate-700 bg-slate-950 flex-shrink-0 shadow"
+                            title="Click để phóng to ảnh lộ trình"
+                          >
+                            <img src={t.img} alt={`Lộ trình #${t.stt}`} className="w-full h-full object-cover group-hover:scale-105 transition-all" />
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition-opacity">
+                              <Icons.Eye />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="w-20 h-14 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center text-[10px] text-slate-500 flex-shrink-0">
+                            Không có ảnh
+                          </div>
+                        )}
+
+                        {/* Thông tin chuyến đi */}
+                        <div className="space-y-0.5 flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs font-bold text-slate-200 truncate">
+                              {t.vehicle_name || 'Taxi Xanh SM'}
+                            </span>
+                            <span className="text-[11px] text-slate-400 font-mono">
+                              {t.date || '--:--'}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 text-xs text-slate-400 flex-wrap">
+                            <span>Quãng đường: <b className="text-cyan-400 font-mono">{Number(t.distance).toFixed(1)} km</b></span>
+                            <span>•</span>
+                            <span>Thời gian: <b className="text-slate-300 font-mono">{t.duration_formatted || formatTime(t.duration_seconds)}</b></span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Cột phải: Tổng tiền & Nút thao tác */}
+                      <div className="flex items-center justify-between sm:justify-end gap-3 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-700/60">
+                        <div className="text-left sm:text-right">
+                          <span className="text-[10px] uppercase text-slate-400 block">Tổng tiền</span>
+                          <span className="text-base sm:text-lg font-black text-emerald-400 font-mono leading-tight block">
+                            {t.total_fare_formatted || formatVND(t.total_fare)}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 ml-2">
+                          <button
+                            onClick={() => onViewInvoice(t)}
+                            title="Xem lại biên lai chi tiết"
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium transition-all"
+                          >
+                            <Icons.FileText />
+                            <span className="hidden md:inline">Biên lai</span>
+                          </button>
+                          {t.img && (
+                            <button
+                              onClick={() => {
+                                const a = document.createElement('a');
+                                a.href = t.img;
+                                a.download = `lo-trinh-chuyen-${t.stt || idx + 1}.png`;
+                                a.click();
+                              }}
+                              title="Tải ảnh lộ trình"
+                              className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white transition-all"
+                            >
+                              <Icons.Download />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => onDeleteTrip(t)}
+                            title="Xoá chuyến đi này"
+                            className="p-1.5 rounded-lg bg-slate-700/50 hover:bg-red-900/60 text-slate-400 hover:text-red-300 transition-all"
+                          >
+                            <Icons.Trash />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-slate-800 border-t border-slate-700 flex items-center justify-between text-xs text-slate-400">
+              <span className="flex items-center gap-1.5 text-[11px]">
+                <Icons.CloudCheck /> Dữ liệu được đồng bộ trực tiếp với Google Firebase
+              </span>
+              <button
+                onClick={onClose}
+                className="px-5 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold text-xs transition-all"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Modal phóng to ảnh lộ trình
+    function ImagePreviewModal({ src, onClose, title = "Ảnh lộ trình di chuyển" }) {
+      if (!src) return null;
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+          <div className="relative max-w-2xl w-full bg-slate-900 border border-slate-700 rounded-3xl overflow-hidden shadow-2xl flex flex-col">
+            <div className="p-4 bg-slate-800 flex items-center justify-between border-b border-slate-700">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Icons.Route /> {title}
+              </h3>
+              <div className="flex items-center gap-2">
+                <a
+                  href={src}
+                  download="lo-trinh-gps.png"
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-all"
+                >
+                  <Icons.Download /> Tải ảnh về
+                </a>
+                <button
+                  onClick={onClose}
+                  className="p-1.5 rounded-xl bg-slate-700 text-slate-400 hover:text-white"
+                >
+                  <Icons.Close />
+                </button>
+              </div>
+            </div>
+            <div className="p-4 bg-slate-950 flex items-center justify-center">
+              <img src={src} alt="Snapshot lộ trình" className="w-full max-h-[70vh] object-contain rounded-xl shadow-lg border border-slate-800" />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // =========================================================================
     // 4. MAIN APPLICATION COMPONENT
     // =========================================================================
     function App() {
@@ -507,6 +1119,13 @@
       // Modals
       const [showInvoice, setShowInvoice] = useState(false);
       const [showPricingModal, setShowPricingModal] = useState(false);
+      const [showHistoryModal, setShowHistoryModal] = useState(false);
+      const [savedTrips, setSavedTrips] = useState([]);
+      const [historyLoading, setHistoryLoading] = useState(false);
+      const [previewImg, setPreviewImg] = useState(null);
+      const [currentTripStt, setCurrentTripStt] = useState(null);
+      const [savingStatus, setSavingStatus] = useState(null);
+      const [lastRouteImg, setLastRouteImg] = useState(null);
 
       // Refs
       const mapContainerRef = useRef(null);
@@ -730,6 +1349,57 @@
         };
       }, [tripStatus]);
 
+      // Tự động tải lịch sử chuyến đi khi mở ứng dụng
+      useEffect(() => {
+        loadSavedTrips();
+      }, []);
+
+      const loadSavedTrips = async () => {
+        setHistoryLoading(true);
+        try {
+          const list = await fetchTripsFromDb();
+          setSavedTrips(list);
+        } catch (e) {
+          console.warn("Lỗi tải chuyến đi:", e);
+        } finally {
+          setHistoryLoading(false);
+        }
+      };
+
+      const handleDeleteTrip = async (trip) => {
+        if (!confirm(`Bạn có chắc muốn xoá chuyến đi #${trip.stt}?`)) return;
+        await deleteTripFromDb(trip);
+        setSavedTrips(prev => prev.filter(t => {
+          if (trip.id && t.id === trip.id) return false;
+          if (trip.stt && t.stt === trip.stt) return false;
+          return true;
+        }));
+      };
+
+      const handleViewPastTripInvoice = (trip) => {
+        setFareResult({
+          vehicleName: trip.vehicle_name || 'Taxi Xanh SM',
+          rawDistanceKm: trip.raw_distance || trip.distance,
+          steppedDistanceKm: trip.distance,
+          totalFare: trip.total_fare,
+          breakdown: trip.breakdown || [
+            {
+              stepName: `Quãng đường di chuyển`,
+              distanceKm: trip.distance,
+              rate: 0,
+              unit: '',
+              subtotal: trip.total_fare
+            }
+          ]
+        });
+        setDurationSeconds(trip.duration_seconds || 0);
+        setCurrentTripStt(trip.stt);
+        setLastRouteImg(trip.img || null);
+        setSavingStatus(`Chuyến đi #${trip.stt} (Đã lưu Firebase)`);
+        setShowHistoryModal(false);
+        setShowInvoice(true);
+      };
+
       // Điều khiển chuyến đi
       const handleStart = () => {
         setStartTime(new Date());
@@ -742,6 +1412,8 @@
         setFareResult(calculateFare(0, selectedVehicle, pricing));
         setDurationSeconds(0);
         setPathCoords([currentPos]);
+        setLastRouteImg(null);
+        setSavingStatus(null);
       };
 
       const handlePause = () => {
@@ -753,8 +1425,9 @@
         setTripStatus('running');
       };
 
-      const handleFinish = () => {
-        setEndTime(new Date());
+      const handleFinish = async () => {
+        const finishTime = new Date();
+        setEndTime(finishTime);
         setTripStatus('finished');
         setCurrentSpeedKmh(0);
         
@@ -762,7 +1435,50 @@
         const finalFare = calculateFare(rawDistanceKm, selectedVehicle, pricing);
         setFareResult(finalFare);
         setTotalFare(finalFare.totalFare);
+
+        // Tạo ảnh snapshot lộ trình từ Canvas (img)
+        const routeSnapshot = generateRouteSnapshot(pathCoords, 540, 320, {
+          distance: finalFare.steppedDistanceKm,
+          totalFareFormatted: formatVND(finalFare.totalFare)
+        });
+        setLastRouteImg(routeSnapshot);
+
+        // Tính số thứ tự STT tiếp theo (lớn hơn STT lớn nhất hiện có)
+        const currentMaxStt = savedTrips.reduce((max, t) => Math.max(max, Number(t.stt) || 0), 0);
+        const nextStt = currentMaxStt + 1;
+        setCurrentTripStt(nextStt);
+
+        // Đối tượng chuyến đi lưu Firebase theo đúng 5 trường yêu cầu
+        const tripRecord = {
+          stt: nextStt,
+          date: formatTripDate(finishTime),
+          timestamp: Date.now(),
+          distance: finalFare.steppedDistanceKm,
+          raw_distance: finalFare.rawDistanceKm,
+          img: routeSnapshot,
+          total_fare: finalFare.totalFare,
+          total_fare_formatted: formatVND(finalFare.totalFare),
+          vehicle_name: finalFare.vehicleName,
+          duration_seconds: durationSeconds,
+          duration_formatted: formatTime(durationSeconds),
+          breakdown: finalFare.breakdown
+        };
+
+        setSavingStatus('Đang lưu chuyến đi vào Firebase...');
         setShowInvoice(true);
+
+        try {
+          const res = await saveTripToDb(tripRecord);
+          if (res.from === 'firebase') {
+            setSavingStatus(`Đã lưu thành công vào Firebase (Chuyến #${nextStt})`);
+          } else {
+            setSavingStatus(`Đã lưu vào bộ nhớ máy (Chuyến #${nextStt})`);
+          }
+          setSavedTrips(prev => [tripRecord, ...prev.filter(t => t.stt !== nextStt)]);
+        } catch (err) {
+          console.error("Lỗi khi lưu chuyến đi:", err);
+          setSavingStatus(`Đã lưu tạm máy (Lỗi Firebase: ${err.message})`);
+        }
       };
 
       const handleReset = () => {
@@ -777,6 +1493,8 @@
         setStartTime(null);
         setEndTime(null);
         setFareResult(calculateFare(0, selectedVehicle, pricing));
+        setLastRouteImg(null);
+        setSavingStatus(null);
       };
 
       const handleRecenter = () => {
@@ -822,6 +1540,19 @@
                     ))}
                   </select>
                 </div>
+
+                {/* Nút xem lịch sử các chuyến đi cạnh nút giá niêm yết */}
+                <button
+                  onClick={() => {
+                    loadSavedTrips();
+                    setShowHistoryModal(true);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-emerald-500/40 text-xs font-semibold text-emerald-400 hover:text-white transition-all shadow-sm active:scale-95"
+                  title="Xem lịch sử các chuyến đi đã lưu vào Firebase"
+                >
+                  <Icons.History />
+                  <span>Lịch sử ({savedTrips.length})</span>
+                </button>
 
                 <button
                   onClick={() => setShowPricingModal(true)}
@@ -1040,7 +1771,14 @@
                 {/* Header Hoá đơn */}
                 <div className="p-6 bg-gradient-to-r from-emerald-600 to-teal-700 text-white flex items-center justify-between">
                   <div>
-                    <h2 className="text-xl font-black">BIÊN LAI CƯỚC CHUYẾN ĐI</h2>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-xl font-black">BIÊN LAI CƯỚC CHUYẾN ĐI</h2>
+                      {currentTripStt && (
+                        <span className="px-2.5 py-0.5 rounded-full bg-black/25 text-emerald-200 text-xs font-black border border-white/20 font-mono">
+                          #{currentTripStt}
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs text-emerald-100">Đồng hồ GPS tính cước chuẩn xác theo quy định</p>
                   </div>
                   <button
@@ -1050,6 +1788,14 @@
                     <Icons.Close />
                   </button>
                 </div>
+
+                {/* Thông báo trạng thái lưu Firebase */}
+                {savingStatus && (
+                  <div className="mx-6 mt-4 p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-800/50 flex items-center gap-2 text-xs text-emerald-300">
+                    <Icons.CloudCheck />
+                    <span>{savingStatus}</span>
+                  </div>
+                )}
 
                 {/* Nội dung Hoá đơn */}
                 <div className="p-6 overflow-y-auto space-y-4 text-slate-200">
@@ -1091,7 +1837,24 @@
                   </div>
 
                   {/* Bản đồ hình ảnh đoạn đường đã di chuyển */}
-                  <InvoiceMiniMap pathCoords={pathCoords} currentPos={currentPos} />
+                  {pathCoords && pathCoords.length > 0 ? (
+                    <InvoiceMiniMap pathCoords={pathCoords} currentPos={currentPos} />
+                  ) : lastRouteImg ? (
+                    <div className="space-y-1.5 my-3">
+                      <div className="flex items-center justify-between text-xs text-slate-300 font-semibold">
+                        <span className="flex items-center gap-1.5 text-cyan-400">
+                          <Icons.Route /> Ảnh snapshot lộ trình di chuyển
+                        </span>
+                        <span className="text-[11px] text-slate-400">Click để phóng to</span>
+                      </div>
+                      <img 
+                        src={lastRouteImg} 
+                        alt="Lộ trình di chuyển" 
+                        className="w-full h-44 sm:h-52 object-contain rounded-2xl border border-slate-700/80 shadow-inner bg-slate-950 cursor-pointer hover:border-cyan-500/50 transition-all"
+                        onClick={() => setPreviewImg(lastRouteImg)}
+                      />
+                    </div>
+                  ) : null}
 
                   {/* Chi tiết từng bậc tính cước */}
                   <div>
@@ -1230,6 +1993,28 @@
               </div>
             </div>
           )}
+
+          {/* ================================================================= */}
+          {/* MODAL LỊCH SỬ CÁC CHUYẾN ĐI (FIREBASE FIRESTORE) */}
+          {/* ================================================================= */}
+          <HistoryModal
+            isOpen={showHistoryModal}
+            onClose={() => setShowHistoryModal(false)}
+            trips={savedTrips}
+            loading={historyLoading}
+            onRefresh={loadSavedTrips}
+            onDeleteTrip={handleDeleteTrip}
+            onViewInvoice={handleViewPastTripInvoice}
+            onPreviewImage={(src) => setPreviewImg(src)}
+          />
+
+          {/* ================================================================= */}
+          {/* MODAL PHÓNG TO ẢNH LỘ TRÌNH */}
+          {/* ================================================================= */}
+          <ImagePreviewModal
+            src={previewImg}
+            onClose={() => setPreviewImg(null)}
+          />
         </div>
       );
     }
