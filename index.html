@@ -90,9 +90,20 @@
         position: absolute;
         left: 0;
         top: 0;
-        width: 100%;
-        background: white !important;
-        color: black !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        background: #0f172a !important;
+        color: #f1f5f9 !important;
+        border: none !important;
+        box-shadow: none !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+      .no-print {
+        display: none !important;
+      }
+      .leaflet-tile {
+        visibility: visible !important;
       }
     }
   </style>
@@ -376,6 +387,117 @@
         </svg>
       )
     };
+
+    // =========================================================================
+    // COMPONENT BẢN ĐỒ ĐOẠN ĐƯỜNG ĐÃ DI CHUYỂN TRÊN HOÁ ĐƠN
+    // =========================================================================
+    function InvoiceMiniMap({ pathCoords, currentPos }) {
+      const containerRef = useRef(null);
+      const mapInstanceRef = useRef(null);
+
+      useEffect(() => {
+        if (!containerRef.current) return;
+
+        const defaultCenter = pathCoords && pathCoords.length > 0 
+          ? [pathCoords[0].lat, pathCoords[0].lng] 
+          : (currentPos ? [currentPos.lat, currentPos.lng] : [21.0285, 105.8542]);
+
+        const map = L.map(containerRef.current, {
+          center: defaultCenter,
+          zoom: 15,
+          zoomControl: false,
+          attributionControl: false,
+          scrollWheelZoom: false,
+          dragging: true,
+        });
+
+        // Layer Google Maps sắc nét, rõ tên đường
+        L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+          maxZoom: 20
+        }).addTo(map);
+
+        if (pathCoords && pathCoords.length > 0) {
+          const latLngs = pathCoords.map(p => [p.lat, p.lng]);
+
+          // Đường vẽ lộ trình xanh ngọc
+          const polyline = L.polyline(latLngs, {
+            color: '#06b6d4',
+            weight: 4.5,
+            opacity: 0.95,
+            lineCap: 'round',
+            lineJoin: 'round'
+          }).addTo(map);
+
+          // Điểm A (Khởi hành)
+          const startPt = latLngs[0];
+          const startIcon = L.divIcon({
+            className: 'start-marker',
+            html: `
+              <div style="background-color: #10b981; color: white; border-radius: 9999px; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; border: 2px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.5);">
+                A
+              </div>
+            `,
+            iconSize: [24, 24],
+            iconAnchor: [12, 12]
+          });
+          L.marker(startPt, { icon: startIcon }).addTo(map);
+
+          // Điểm B (Kết thúc) nếu có từ 2 điểm
+          if (latLngs.length > 1) {
+            const endPt = latLngs[latLngs.length - 1];
+            const endIcon = L.divIcon({
+              className: 'end-marker',
+              html: `
+                <div style="background-color: #ef4444; color: white; border-radius: 9999px; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; border: 2px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.5);">
+                  B
+                </div>
+              `,
+              iconSize: [24, 24],
+              iconAnchor: [12, 12]
+            });
+            L.marker(endPt, { icon: endIcon }).addTo(map);
+
+            map.fitBounds(polyline.getBounds(), { padding: [25, 25], maxZoom: 17 });
+          } else {
+            map.setView(startPt, 16);
+          }
+        }
+
+        mapInstanceRef.current = map;
+
+        // Tự động căn chỉnh kích thước khi modal hiển thị xong
+        const timer = setTimeout(() => {
+          map.invalidateSize();
+          if (pathCoords && pathCoords.length > 1) {
+            const polyline = L.polyline(pathCoords.map(p => [p.lat, p.lng]));
+            map.fitBounds(polyline.getBounds(), { padding: [25, 25], maxZoom: 17 });
+          }
+        }, 300);
+
+        return () => {
+          clearTimeout(timer);
+          map.remove();
+          mapInstanceRef.current = null;
+        };
+      }, [pathCoords]);
+
+      return (
+        <div className="space-y-1.5 my-3">
+          <div className="flex items-center justify-between text-xs text-slate-300 font-semibold">
+            <span className="flex items-center gap-1.5 text-cyan-400">
+              <Icons.Route /> Bản đồ đoạn đường đã di chuyển
+            </span>
+            <span className="text-[11px] font-normal text-slate-400 bg-slate-800 px-2 py-0.5 rounded-full border border-slate-700">
+              {pathCoords && pathCoords.length > 1 ? `${pathCoords.length} toạ độ GPS` : 'Vị trí hiện tại'}
+            </span>
+          </div>
+          <div 
+            ref={containerRef} 
+            className="w-full h-44 sm:h-52 rounded-2xl overflow-hidden border border-slate-700/80 shadow-inner bg-slate-950 relative z-10"
+          />
+        </div>
+      );
+    }
 
     // =========================================================================
     // 4. MAIN APPLICATION COMPONENT
@@ -999,7 +1121,7 @@
                   </div>
                   <button
                     onClick={() => setShowInvoice(false)}
-                    className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all"
+                    className="no-print p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all"
                   >
                     <Icons.Close />
                   </button>
@@ -1044,6 +1166,9 @@
                     </div>
                   </div>
 
+                  {/* Bản đồ hình ảnh đoạn đường đã di chuyển */}
+                  <InvoiceMiniMap pathCoords={pathCoords} currentPos={currentPos} />
+
                   {/* Chi tiết từng bậc tính cước */}
                   <div>
                     <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
@@ -1079,7 +1204,7 @@
                 </div>
 
                 {/* Footer Buttons */}
-                <div className="p-4 bg-slate-800 border-t border-slate-700 flex justify-end gap-3">
+                <div className="no-print p-4 bg-slate-800 border-t border-slate-700 flex justify-end gap-3">
                   <button
                     onClick={() => window.print()}
                     className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 font-medium text-xs transition-all"
