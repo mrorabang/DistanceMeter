@@ -1065,7 +1065,7 @@
                 }`}
               >
                 <Icons.Sparkles />
-                <span>{isSimulating ? 'Đang bật mô phỏng GPS' : 'Mô phỏng GPS (Test máy tính)'}</span>
+                 <span>{isSimulating ? 'Đang bật mô phỏng GPS' : 'Mô phỏng GPS (Test máy tính)'}</span>
               </button>
             </div>
 
@@ -1191,33 +1191,39 @@
                     </div>
                   </div>
 
-                  {/* Tổng tiền thanh toán */}
-                  <div className="p-5 rounded-2xl bg-gradient-to-r from-emerald-950/60 to-slate-900 border-2 border-emerald-500/50 flex items-center justify-between">
-                    <div>
-                      <span className="text-xs text-emerald-300 font-bold uppercase">Tổng cước thanh toán</span>
-                      <p className="text-[11px] text-slate-400">Đã bao gồm thuế và các bậc cước</p>
-                    </div>
-                    <div className="text-3xl font-black text-emerald-400 font-mono">
-                      {formatVND(fareResult.totalFare)}
-                    </div>
-                  </div>
                 </div>
 
-                {/* Footer Buttons */}
-                <div className="no-print p-4 bg-slate-800 border-t border-slate-700 flex justify-end gap-3">
-                  <button
-                    onClick={() => window.print()}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 font-medium text-xs transition-all"
-                  >
-                    <Icons.Printer />
-                    <span>In biên lai</span>
-                  </button>
-                  <button
-                    onClick={() => setShowInvoice(false)}
-                    className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition-all"
-                  >
-                    Đóng
-                  </button>
+                {/* Footer: Tổng cước thanh toán nằm ở phần ngoài, cùng cấp với nút bấm */}
+                <div className="p-4 sm:p-5 bg-slate-800/95 border-t border-slate-700 flex flex-wrap items-center justify-between gap-3 shadow-lg">
+                  {/* Bên trái: Tổng cước thanh toán */}
+                  <div className="flex flex-col">
+                    <span className="text-[11px] text-emerald-400 font-bold uppercase tracking-wider">
+                      Tổng cước thanh toán
+                    </span>
+                    <span className="text-2xl sm:text-3xl font-black text-emerald-400 font-mono tracking-tight leading-none mt-1">
+                      {formatVND(fareResult.totalFare)}
+                    </span>
+                    <span className="text-[10px] text-slate-400 mt-0.5">
+                      Đã bao gồm thuế & cước bậc thang
+                    </span>
+                  </div>
+
+                  {/* Bên phải: Cụm nút In biên lai & Đóng (ẩn khi in) */}
+                  <div className="no-print flex items-center gap-2.5 ml-auto">
+                    <button
+                      onClick={() => window.print()}
+                      className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 hover:text-white font-semibold text-xs transition-all shadow-md active:scale-95"
+                    >
+                      <Icons.Printer />
+                      <span>In biên lai</span>
+                    </button>
+                    <button
+                      onClick={() => setShowInvoice(false)}
+                      className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-all shadow-lg shadow-emerald-950/40 active:scale-95"
+                    >
+                      Đóng
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
