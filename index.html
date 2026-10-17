@@ -1222,6 +1222,70 @@
       const watchIdRef = useRef(null);
       const timerRef = useRef(null);
 
+      // Quản lý thời gian thực tuyệt đối bằng Timestamp (chống lag/ngừng khi ra màn hình chính)
+      const startTimeRef = useRef(null);
+      const pausedTimeAccumRef = useRef(0);
+      const pauseStartRef = useRef(null);
+      
+      // Quản lý chống tắt màn hình (Screen Wake Lock API) & chạy ngầm
+      const wakeLockRef = useRef(null);
+      const [wakeLockActive, setWakeLockActive] = useState(false);
+      const audioCtxRef = useRef(null);
+
+      const requestWakeLock = async () => {
+        try {
+          if ('wakeLock' in navigator) {
+            wakeLockRef.current = await navigator.wakeLock.request('screen');
+            setWakeLockActive(true);
+            wakeLockRef.current.addEventListener('release', () => {
+              setWakeLockActive(false);
+              wakeLockRef.current = null;
+            });
+          }
+        } catch (e) {
+          console.warn("Screen WakeLock không khả dụng:", e);
+        }
+      };
+
+      const releaseWakeLock = () => {
+        if (wakeLockRef.current) {
+          wakeLockRef.current.release().catch(() => {});
+          wakeLockRef.current = null;
+          setWakeLockActive(false);
+        }
+      };
+
+      const startSilentAudio = () => {
+        try {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          if (!AudioCtx) return;
+          if (!audioCtxRef.current) {
+            audioCtxRef.current = new AudioCtx();
+          }
+          if (audioCtxRef.current.state === 'suspended') {
+            audioCtxRef.current.resume();
+          }
+          // Âm thanh tần số siêu thấp không nghe thấy để ngăn trình duyệt ngủ đông
+          const osc = audioCtxRef.current.createOscillator();
+          const gain = audioCtxRef.current.createGain();
+          gain.gain.value = 0.00001;
+          osc.connect(gain);
+          gain.connect(audioCtxRef.current.destination);
+          osc.start();
+        } catch (e) {
+          console.warn("Audio keep-alive error:", e);
+        }
+      };
+
+      const stopSilentAudio = () => {
+        try {
+          if (audioCtxRef.current) {
+            audioCtxRef.current.close().catch(() => {});
+            audioCtxRef.current = null;
+          }
+        } catch (e) {}
+      };
+
       // --- Khởi tạo Bản đồ Leaflet ---
       useEffect(() => {
         if (!mapContainerRef.current) return;
@@ -1352,17 +1416,59 @@
         }
       }, []);
 
-      // Đồng hồ bấm giờ (Timer)
+      // Đồng hồ bấm giờ chuẩn xác theo Timestamp (Không bao giờ bị lệch hay ngưng khi ra màn hình chính)
       useEffect(() => {
         if (tripStatus === 'running') {
-          timerRef.current = setInterval(() => {
-            setDurationSeconds((prev) => prev + 1);
-          }, 1000);
+          const updateClock = () => {
+            if (!startTimeRef.current) return;
+            const now = Date.now();
+            const elapsed = Math.floor((now - startTimeRef.current - pausedTimeAccumRef.current) / 1000);
+            setDurationSeconds(Math.max(0, elapsed));
+          };
+
+          updateClock();
+          timerRef.current = setInterval(updateClock, 1000);
         } else {
           if (timerRef.current) clearInterval(timerRef.current);
         }
         return () => {
           if (timerRef.current) clearInterval(timerRef.current);
+        };
+      }, [tripStatus]);
+
+      // Xử lý sự kiện khi người dùng thoát ra màn hình chính và quay trở lại (Page Visibility API)
+      useEffect(() => {
+        const handleVisibilityChange = () => {
+          if (document.visibilityState === 'visible') {
+            // Khi người dùng mở lại trang từ màn hình chính:
+            if (tripStatus === 'running' && startTimeRef.current) {
+              const now = Date.now();
+              const elapsed = Math.floor((now - startTimeRef.current - pausedTimeAccumRef.current) / 1000);
+              setDurationSeconds(Math.max(0, elapsed));
+              // Lấy lại quyền giữ sáng màn hình nếu bị trình duyệt nhả ra
+              requestWakeLock();
+              // Lấy lại vị trí GPS mới nhất
+              if ('geolocation' in navigator) {
+                navigator.geolocation.getCurrentPosition(
+                  (pos) => {
+                    const { latitude, longitude, accuracy } = pos.coords;
+                    if (accuracy <= 35) {
+                      setCurrentPos({ lat: latitude, lng: longitude, accuracy });
+                    }
+                  },
+                  () => {},
+                  { enableHighAccuracy: true, timeout: 5000 }
+                );
+              }
+            }
+          }
+        };
+
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        window.addEventListener('focus', handleVisibilityChange);
+        return () => {
+          document.removeEventListener('visibilitychange', handleVisibilityChange);
+          window.removeEventListener('focus', handleVisibilityChange);
         };
       }, [tripStatus]);
 
@@ -1374,7 +1480,7 @@
         setFareResult(result);
       }, [rawDistanceKm, selectedVehicle, pricing]);
 
-      // GPS Watcher khi di chuyển thật trên đường
+      // GPS Watcher khi di chuyển thật trên đường (Lọc nhiễu & Chống nhảy toạ độ khi thức dậy)
       useEffect(() => {
         if (tripStatus === 'running') {
           if (!('geolocation' in navigator)) {
@@ -1389,7 +1495,7 @@
                 lat: latitude,
                 lng: longitude,
                 accuracy: accuracy || 10,
-                timestamp: pos.timestamp,
+                timestamp: pos.timestamp || Date.now(),
                 speed: speed || 0
               };
 
@@ -1404,12 +1510,33 @@
               setPathCoords((prev) => {
                 if (prev.length === 0) return [newPt];
                 const last = prev[prev.length - 1];
+
+                // 1. Kiểm tra độ chính xác GPS: bỏ qua điểm nếu sai số quá lớn (> 35m)
+                if (accuracy && accuracy > 35) {
+                  return prev;
+                }
+
+                // 2. Bỏ qua toạ độ cũ từ cache trình duyệt (stale timestamp)
+                if (newPt.timestamp && last.timestamp && newPt.timestamp <= last.timestamp) {
+                  return prev;
+                }
+
                 const distKm = haversineDistance(last.lat, last.lng, newPt.lat, newPt.lng);
                 const distMeters = distKm * 1000;
 
-                // Lọc nhiễu dừng xe (< 3m) hoặc sai lệch lớn (> 50m)
-                if (distMeters < 3 || (accuracy && accuracy > 50)) {
+                // 3. Lọc rung lắc khi xe dừng (< 3m)
+                if (distMeters < 3) {
                   return prev;
+                }
+
+                // 4. Lọc nhảy vọt GPS phi lý do máy vừa bật lại từ chế độ ngủ (> 150 km/h)
+                const elapsedSec = (newPt.timestamp - last.timestamp) / 1000;
+                if (elapsedSec > 0) {
+                  const calculatedSpeedKmh = (distKm / (elapsedSec / 3600));
+                  if (calculatedSpeedKmh > 150) {
+                    console.warn(`Lọc toạ độ giật phi lý: ${calculatedSpeedKmh.toFixed(0)} km/h`);
+                    return prev;
+                  }
                 }
 
                 setRawDistanceKm((d) => d + distKm);
@@ -1514,7 +1641,12 @@
 
       // Điều khiển chuyến đi
       const handleStart = () => {
-        setStartTime(new Date());
+        const now = Date.now();
+        startTimeRef.current = now;
+        pausedTimeAccumRef.current = 0;
+        pauseStartRef.current = null;
+
+        setStartTime(new Date(now));
         setEndTime(null);
         setTripStatus('running');
         setRawDistanceKm(0.0);
@@ -1526,15 +1658,28 @@
         setPathCoords([currentPos]);
         setLastRouteImg(null);
         setSavingStatus(null);
+
+        // Kích hoạt chống tắt màn hình và giữ tiến trình chạy ngầm
+        requestWakeLock();
+        startSilentAudio();
       };
 
       const handlePause = () => {
+        pauseStartRef.current = Date.now();
         setTripStatus('paused');
         setCurrentSpeedKmh(0);
+        releaseWakeLock();
+        stopSilentAudio();
       };
 
       const handleResume = () => {
+        if (pauseStartRef.current) {
+          pausedTimeAccumRef.current += (Date.now() - pauseStartRef.current);
+          pauseStartRef.current = null;
+        }
         setTripStatus('running');
+        requestWakeLock();
+        startSilentAudio();
       };
 
       const handleFinish = async () => {
@@ -1542,7 +1687,9 @@
         setEndTime(finishTime);
         setTripStatus('finished');
         setCurrentSpeedKmh(0);
-        
+        releaseWakeLock();
+        stopSilentAudio();
+
         // Tính cước hoá đơn chính thức
         const finalFare = calculateFare(rawDistanceKm, selectedVehicle, pricing);
         setFareResult(finalFare);
@@ -1583,8 +1730,12 @@
           const res = await saveTripToDb(tripRecord);
           if (res.from === 'firebase') {
             setSavingStatus(`Đã lưu thành công vào Firebase (Chuyến #${nextStt})`);
+            setFirebaseError(null);
           } else {
             setSavingStatus(`Đã lưu vào bộ nhớ máy (Chuyến #${nextStt})`);
+            if (res.code === 'permission-denied') {
+              setFirebaseError('permission-denied');
+            }
           }
           setSavedTrips(prev => [tripRecord, ...prev.filter(t => t.stt !== nextStt)]);
         } catch (err) {
@@ -1594,6 +1745,12 @@
       };
 
       const handleReset = () => {
+        startTimeRef.current = null;
+        pausedTimeAccumRef.current = 0;
+        pauseStartRef.current = null;
+        releaseWakeLock();
+        stopSilentAudio();
+
         setTripStatus('idle');
         setPathCoords([]);
         setRawDistanceKm(0.0);
@@ -1687,11 +1844,18 @@
                 }`} />
                 <span>{gpsStatus}</span>
               </div>
-              {tripStatus === 'running' && (
-                <div className="text-emerald-400 font-semibold animate-pulse">
-                  ● Đang ghi nhận lộ trình GPS
-                </div>
-              )}
+              <div className="flex items-center gap-2">
+                {wakeLockActive && (
+                  <span className="inline-flex items-center gap-1 text-[11px] text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
+                    🔆 Giữ sáng màn hình
+                  </span>
+                )}
+                {tripStatus === 'running' && (
+                  <div className="text-emerald-400 font-semibold animate-pulse">
+                    ● Đang ghi nhận lộ trình GPS
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Dashboard 4 Thẻ Metric */}
