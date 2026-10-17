@@ -763,6 +763,13 @@
         <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
           <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
         </svg>
+      ),
+      AlertTriangle: () => (
+        <svg className="w-8 h-8" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
       )
     };
 
@@ -1201,6 +1208,7 @@
       const [endTime, setEndTime] = useState(null);
 
       // Modals
+      const [showConfirmFinish, setShowConfirmFinish] = useState(false);
       const [showInvoice, setShowInvoice] = useState(false);
       const [showPricingModal, setShowPricingModal] = useState(false);
       const [showHistoryModal, setShowHistoryModal] = useState(false);
@@ -1683,6 +1691,7 @@
       };
 
       const handleFinish = async () => {
+        setShowConfirmFinish(false);
         const finishTime = new Date();
         setEndTime(finishTime);
         setTripStatus('finished');
@@ -1745,6 +1754,7 @@
       };
 
       const handleReset = () => {
+        setShowConfirmFinish(false);
         startTimeRef.current = null;
         pausedTimeAccumRef.current = 0;
         pauseStartRef.current = null;
@@ -1960,7 +1970,7 @@
                       <span>Tạm dừng</span>
                     </button>
                     <button
-                      onClick={handleFinish}
+                      onClick={() => setShowConfirmFinish(true)}
                       className="flex items-center gap-2 px-6 py-3 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold shadow-lg shadow-red-950/40 transition-all active:scale-95"
                     >
                       <Icons.Stop />
@@ -1979,7 +1989,7 @@
                       <span>Tiếp tục di chuyển</span>
                     </button>
                     <button
-                      onClick={handleFinish}
+                      onClick={() => setShowConfirmFinish(true)}
                       className="flex items-center gap-2 px-6 py-3 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold shadow-lg shadow-red-950/40 transition-all active:scale-95"
                     >
                       <Icons.Stop />
@@ -2038,6 +2048,77 @@
           <footer className="border-t border-slate-900 py-3 text-center text-xs text-slate-500">
             DistanceMeter • 100% Client-side JavaScript • Step 0.1 KM • OpenStreetMap Leaflet
           </footer>
+
+          {/* ================================================================= */}
+          {/* MODAL XÁC NHẬN KẾT THÚC CHUYẾN ĐI TRƯỚC KHI QUA BIÊN LAI */}
+          {/* ================================================================= */}
+          {showConfirmFinish && (
+            <div 
+              onClick={() => setShowConfirmFinish(false)}
+              className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+            >
+              <div 
+                onClick={(e) => e.stopPropagation()}
+                className="relative w-full max-w-sm sm:max-w-md bg-slate-900 border border-slate-700/80 rounded-3xl p-6 shadow-2xl space-y-5 text-center animate-fadeIn"
+              >
+                {/* Icon cảnh báo nổi bật */}
+                <div className="w-16 h-16 mx-auto rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shadow-lg shadow-amber-950/40">
+                  <Icons.AlertTriangle />
+                </div>
+
+                {/* Tiêu đề & Thông điệp */}
+                <div className="space-y-1.5">
+                  <h3 className="text-lg sm:text-xl font-black text-white">
+                    Xác nhận kết thúc chuyến đi?
+                  </h3>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Hệ thống sẽ chốt đồng hồ đo GPS, tính tiền theo bảng cước, lưu vào lịch sử Firebase và xuất hoá đơn thanh toán.
+                  </p>
+                </div>
+
+                {/* Thẻ tóm tắt thông số chuyến đi hiện tại */}
+                <div className="p-4 rounded-2xl bg-slate-800/80 border border-slate-700/60 grid grid-cols-3 gap-2 text-center">
+                  <div>
+                    <span className="text-[11px] text-slate-400 block font-medium">Quãng đường</span>
+                    <span className="text-base sm:text-lg font-black text-cyan-400 font-mono mt-0.5 block">
+                      {steppedDistanceKm.toFixed(1)} <span className="text-xs font-semibold">km</span>
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-slate-400 block font-medium">Thời gian</span>
+                    <span className="text-base sm:text-lg font-black text-white font-mono mt-0.5 block">
+                      {formatTime(durationSeconds)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-slate-400 block font-medium">Tạm tính</span>
+                    <span className="text-base sm:text-lg font-black text-emerald-400 font-mono mt-0.5 block truncate">
+                      {formatVND(totalFare)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Cụm 2 nút hành động: Huỷ (Tiếp tục chạy) vs Đồng ý kết thúc */}
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmFinish(false)}
+                    className="w-full py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-bold text-xs sm:text-sm transition-all border border-slate-700 active:scale-95"
+                  >
+                    Tiếp tục chạy
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleFinish}
+                    className="w-full py-3 px-4 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs sm:text-sm transition-all shadow-lg shadow-red-950/40 active:scale-95 flex items-center justify-center gap-1.5"
+                  >
+                    <Icons.Stop />
+                    <span>Kết thúc ngay</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ================================================================= */}
           {/* MODAL HOÁ ĐƠN / BIÊN LAI TÍNH TIỀN */}
