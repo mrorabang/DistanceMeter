@@ -166,71 +166,68 @@
     }
 
     // =========================================================================
-    // HÀM TẠO ẢNH SNAPSHOT LỘ TRÌNH GPS (CANVAS CLIENT-SIDE -> BASE64 DATA URL)
+    // HÀM TẠO ẢNH SNAPSHOT LỘ TRÌNH GPS TRỰC QUAN CÓ BẢN ĐỒ THỰC (MAP TILES)
     // =========================================================================
-    function generateRouteSnapshot(coords, width = 540, height = 320, options = {}) {
+    async function generateRouteSnapshot(coords, width = 540, height = 320, options = {}) {
       const canvas = document.createElement('canvas');
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext('2d');
 
-      // 1. Nền bản đồ tối sang trọng
-      const bgGrad = ctx.createLinearGradient(0, 0, width, height);
-      bgGrad.addColorStop(0, '#090d16');
-      bgGrad.addColorStop(1, '#0f172a');
-      ctx.fillStyle = bgGrad;
-      ctx.fillRect(0, 0, width, height);
-
-      // 2. Lưới toạ độ bản đồ (Grid lines)
-      ctx.strokeStyle = 'rgba(51, 65, 85, 0.35)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
-      const gridSize = 45;
-      for (let x = gridSize; x < width; x += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, height);
-        ctx.stroke();
-      }
-      for (let y = gridSize; y < height; y += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
-
       const validCoords = (coords && coords.length > 0) ? coords : [];
 
-      if (validCoords.length === 0) {
-        // Chưa có toạ độ -> Vẽ radar tâm
-        ctx.fillStyle = '#06b6d4';
-        ctx.beginPath();
-        ctx.arc(width / 2, height / 2, 8, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(6, 182, 212, 0.4)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(width / 2, height / 2, 32, 0, Math.PI * 2);
-        ctx.stroke();
-      } else if (validCoords.length === 1) {
-        // 1 toạ độ GPS
-        const cx = width / 2;
-        const cy = height / 2;
-        ctx.fillStyle = '#10b981';
-        ctx.beginPath();
-        ctx.arc(cx, cy, 14, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2.5;
-        ctx.stroke();
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 12px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('A', cx, cy);
-      } else {
-        // Nhiều toạ độ -> Tính bounding box và vẽ đường lộ trình
+      // Helper vẽ hình chữ nhật bo góc an toàn trên mọi thiết bị
+      const drawRoundRect = (c, x, y, w, h, r) => {
+        c.beginPath();
+        c.moveTo(x + r, y);
+        c.lineTo(x + w - r, y);
+        c.arcTo(x + w, y, x + w, y + r, r);
+        c.lineTo(x + w, y + h - r);
+        c.arcTo(x + w, y + h, x + w - r, y + h, r);
+        c.lineTo(x + r, y + h);
+        c.arcTo(x, y + h, x, y + h - r, r);
+        c.lineTo(x, y + r);
+        c.arcTo(x, y, x + r, y, r);
+        c.closePath();
+      };
+
+      // Helper chuyển toạ độ Lat/Lng sang Web Mercator (EPSG:3857)
+      const projectMercator = (lat, lng, zoom) => {
+        const d = Math.PI / 180;
+        const maxLat = 85.0511287798;
+        const latClamped = Math.max(Math.min(maxLat, lat), -maxLat);
+        const sin = Math.sin(latClamped * d);
+        const scale = 256 * Math.pow(2, zoom);
+        const x = scale * (lng + 180) / 360;
+        const y = scale * (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI));
+        return { x, y };
+      };
+
+      // Helper tải 1 tile bản đồ có CORS cho phép vẽ lên Canvas
+      const loadTile = (tx, ty, zoom) => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => resolve({ img, tx, ty });
+          img.onerror = () => {
+            // Nguồn dự phòng nếu Google Maps không phản hồi
+            const fallback = new Image();
+            fallback.crossOrigin = 'anonymous';
+            fallback.onload = () => resolve({ img: fallback, tx, ty });
+            fallback.onerror = () => resolve(null);
+            fallback.src = `https://a.basemaps.cartocdn.com/rastertiles/voyager/${zoom}/${tx}/${ty}.png`;
+            setTimeout(() => resolve(null), 2000);
+          };
+          img.src = `https://mt1.google.com/vt/lyrs=m&x=${tx}&y=${ty}&z=${zoom}`;
+          setTimeout(() => resolve(null), 3000);
+        });
+      };
+
+      let bestZoom = 15;
+      let tlX = 0, tlY = 0;
+      let tilesDrawn = 0;
+
+      if (validCoords.length > 0) {
         let minLat = Infinity, maxLat = -Infinity;
         let minLng = Infinity, maxLng = -Infinity;
         validCoords.forEach(p => {
@@ -240,23 +237,114 @@
           if (p.lng > maxLng) maxLng = p.lng;
         });
 
-        const dLat = Math.max(maxLat - minLat, 0.0004);
-        const dLng = Math.max(maxLng - minLng, 0.0004);
-        const padX = 60;
-        const padY = 55;
+        const cLat = (minLat + maxLat) / 2;
+        const cLng = (minLng + maxLng) / 2;
 
-        const toScreen = (p) => {
+        if (validCoords.length > 1) {
+          bestZoom = 12;
+          for (let z = 18; z >= 10; z--) {
+            const p1 = projectMercator(maxLat, minLng, z);
+            const p2 = projectMercator(minLat, maxLng, z);
+            const spanX = Math.abs(p2.x - p1.x);
+            const spanY = Math.abs(p2.y - p1.y);
+            if (spanX <= (width - 100) && spanY <= (height - 90)) {
+              bestZoom = z;
+              break;
+            }
+          }
+        } else {
+          bestZoom = 15;
+        }
+
+        const centerPx = projectMercator(cLat, cLng, bestZoom);
+        tlX = centerPx.x - width / 2;
+        tlY = centerPx.y - height / 2;
+
+        const minTx = Math.floor(tlX / 256);
+        const maxTx = Math.floor((tlX + width) / 256);
+        const minTy = Math.floor(tlY / 256);
+        const maxTy = Math.floor((tlY + height) / 256);
+
+        const tilePromises = [];
+        const nTiles = Math.pow(2, bestZoom);
+        for (let tx = minTx; tx <= maxTx; tx++) {
+          for (let ty = minTy; ty <= maxTy; ty++) {
+            if (ty >= 0 && ty < nTiles) {
+              const wrappedTx = ((tx % nTiles) + nTiles) % nTiles;
+              tilePromises.push(loadTile(wrappedTx, ty, bestZoom));
+            }
+          }
+        }
+
+        try {
+          const loadedTiles = await Promise.all(tilePromises);
+          loadedTiles.forEach(t => {
+            if (t && t.img) {
+              const destX = t.tx * 256 - tlX;
+              const destY = t.ty * 256 - tlY;
+              ctx.drawImage(t.img, destX, destY, 256, 256);
+              tilesDrawn++;
+            }
+          });
+        } catch (err) {
+          console.warn("Lỗi khi tải tiles bản đồ:", err);
+        }
+      }
+
+      // Nếu không tải được tile nào (do offline), vẽ nền dự phòng tối
+      if (tilesDrawn === 0) {
+        const bgGrad = ctx.createLinearGradient(0, 0, width, height);
+        bgGrad.addColorStop(0, '#090d16');
+        bgGrad.addColorStop(1, '#0f172a');
+        ctx.fillStyle = bgGrad;
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.strokeStyle = 'rgba(51, 65, 85, 0.35)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        for (let x = 45; x < width; x += 45) {
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
+        }
+        for (let y = 45; y < height; y += 45) {
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      } else {
+        // Nếu đã có bản đồ thật, phủ 1 lớp bóng nhẹ để lộ trình cyan nổi bật
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.08)';
+        ctx.fillRect(0, 0, width, height);
+      }
+
+      // Hàm quy đổi toạ độ sang toạ độ Canvas
+      const toScreen = (p) => {
+        if (tilesDrawn > 0) {
+          const pt = projectMercator(p.lat, p.lng, bestZoom);
+          return { x: pt.x - tlX, y: pt.y - tlY };
+        } else {
+          let minLat = Infinity, maxLat = -Infinity;
+          let minLng = Infinity, maxLng = -Infinity;
+          validCoords.forEach(c => {
+            if (c.lat < minLat) minLat = c.lat;
+            if (c.lat > maxLat) maxLat = c.lat;
+            if (c.lng < minLng) minLng = c.lng;
+            if (c.lng > maxLng) maxLng = c.lng;
+          });
+          const dLat = Math.max(maxLat - minLat, 0.0004);
+          const dLng = Math.max(maxLng - minLng, 0.0004);
+          const padX = 60, padY = 55;
           const x = padX + ((p.lng - minLng) / dLng) * (width - 2 * padX);
           const y = height - (padY + ((p.lat - minLat) / dLat) * (height - 2 * padY));
           return { x, y };
-        };
+        }
+      };
 
-        // Lớp phát quang xanh ngọc (Cyan glow)
+      if (validCoords.length > 1) {
+        // 1. Viền phát quang Neon Cyan
         ctx.save();
-        ctx.shadowColor = 'rgba(6, 182, 212, 0.85)';
-        ctx.shadowBlur = 12;
+        ctx.shadowColor = 'rgba(6, 182, 212, 0.95)';
+        ctx.shadowBlur = 10;
         ctx.strokeStyle = '#06b6d4';
-        ctx.lineWidth = 5.5;
+        ctx.lineWidth = 6;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.beginPath();
@@ -268,9 +356,9 @@
         ctx.stroke();
         ctx.restore();
 
-        // Lớp đường polyline sáng bên trong
-        ctx.strokeStyle = '#67e8f9';
-        ctx.lineWidth = 2.5;
+        // 2. Lõi đường nét đậm rõ nét
+        ctx.strokeStyle = '#0891b2';
+        ctx.lineWidth = 3;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.beginPath();
@@ -281,7 +369,7 @@
         });
         ctx.stroke();
 
-        // Marker A (Điểm khởi hành)
+        // 3. Điểm khởi hành (Marker A - Xanh lá)
         const pStart = toScreen(validCoords[0]);
         ctx.fillStyle = '#10b981';
         ctx.beginPath();
@@ -296,7 +384,7 @@
         ctx.textBaseline = 'middle';
         ctx.fillText('A', pStart.x, pStart.y);
 
-        // Marker B (Điểm kết thúc)
+        // 4. Điểm kết thúc (Marker B - Đỏ)
         const pEnd = toScreen(validCoords[validCoords.length - 1]);
         ctx.fillStyle = '#ef4444';
         ctx.beginPath();
@@ -310,14 +398,27 @@
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText('B', pEnd.x, pEnd.y);
+      } else if (validCoords.length === 1) {
+        const pt = toScreen(validCoords[0]);
+        ctx.fillStyle = '#10b981';
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 13, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('A', pt.x, pt.y);
       }
 
-      // Watermark góc trên
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-      ctx.strokeStyle = 'rgba(51, 65, 85, 0.7)';
+      // Huy hiệu góc trên: DistanceMeter • GPS Track
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+      ctx.strokeStyle = 'rgba(51, 65, 85, 0.8)';
       ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.roundRect(16, 14, 190, 28, 8);
+      drawRoundRect(ctx, 16, 14, 190, 28, 8);
       ctx.fill();
       ctx.stroke();
 
@@ -334,19 +435,23 @@
 
       // Badge hiển thị khoảng cách và tổng tiền ở đáy ảnh
       if (options.distance !== undefined || options.totalFareFormatted !== undefined) {
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-        ctx.strokeStyle = 'rgba(51, 65, 85, 0.8)';
-        ctx.beginPath();
-        ctx.roundRect(16, height - 44, width - 32, 30, 8);
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+        ctx.strokeStyle = 'rgba(51, 65, 85, 0.85)';
+        ctx.lineWidth = 1;
+        drawRoundRect(ctx, 16, height - 44, width - 32, 30, 8);
         ctx.fill();
         ctx.stroke();
 
-        ctx.fillStyle = '#38bdf8';
-        ctx.font = 'bold 12px monospace';
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '11px sans-serif';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        const distText = `Lộ trình: ${options.distance !== undefined ? options.distance : '--'} km`;
-        ctx.fillText(distText, 26, height - 29);
+        ctx.fillText('Lộ trình: ', 26, height - 29);
+
+        ctx.fillStyle = '#38bdf8';
+        ctx.font = 'bold 12px monospace';
+        const distText = `${options.distance !== undefined ? options.distance : '--'} km`;
+        ctx.fillText(distText, 74, height - 29);
 
         if (options.totalFareFormatted) {
           ctx.fillStyle = '#34d399';
@@ -356,7 +461,12 @@
         }
       }
 
-      return canvas.toDataURL('image/png');
+      try {
+        return canvas.toDataURL('image/png');
+      } catch (e) {
+        console.warn('Canvas toDataURL failed:', e);
+        return null;
+      }
     }
 
     // =========================================================================
@@ -1218,6 +1328,7 @@
       const [currentTripStt, setCurrentTripStt] = useState(null);
       const [savingStatus, setSavingStatus] = useState(null);
       const [lastRouteImg, setLastRouteImg] = useState(null);
+      const [invoiceCoords, setInvoiceCoords] = useState(null);
       const [firebaseError, setFirebaseError] = useState(null);
       const [isSyncing, setIsSyncing] = useState(false);
 
@@ -1642,6 +1753,7 @@
         setDurationSeconds(trip.duration_seconds || 0);
         setCurrentTripStt(trip.stt);
         setLastRouteImg(trip.img || null);
+        setInvoiceCoords(trip.coords || trip.path_coords || null);
         setSavingStatus(`Chuyến đi #${trip.stt} (Đã lưu Firebase)`);
         setShowHistoryModal(false);
         setShowInvoice(true);
@@ -1665,6 +1777,7 @@
         setDurationSeconds(0);
         setPathCoords([currentPos]);
         setLastRouteImg(null);
+        setInvoiceCoords(null);
         setSavingStatus(null);
 
         // Kích hoạt chống tắt màn hình và giữ tiến trình chạy ngầm
@@ -1704,25 +1817,32 @@
         setFareResult(finalFare);
         setTotalFare(finalFare.totalFare);
 
-        // Tạo ảnh snapshot lộ trình từ Canvas (img)
-        const routeSnapshot = generateRouteSnapshot(pathCoords, 540, 320, {
-          distance: finalFare.steppedDistanceKm,
-          totalFareFormatted: formatVND(finalFare.totalFare)
-        });
+        // Tạo ảnh snapshot lộ trình trực quan từ Canvas có bản đồ đường phố thật
+        let routeSnapshot = null;
+        try {
+          routeSnapshot = await generateRouteSnapshot(pathCoords, 540, 320, {
+            distance: finalFare.steppedDistanceKm,
+            totalFareFormatted: formatVND(finalFare.totalFare)
+          });
+        } catch (e) {
+          console.warn("Lỗi sinh ảnh snapshot bản đồ:", e);
+        }
         setLastRouteImg(routeSnapshot);
+        setInvoiceCoords(pathCoords);
 
         // Tính số thứ tự STT tiếp theo (lớn hơn STT lớn nhất hiện có)
         const currentMaxStt = savedTrips.reduce((max, t) => Math.max(max, Number(t.stt) || 0), 0);
         const nextStt = currentMaxStt + 1;
         setCurrentTripStt(nextStt);
 
-        // Đối tượng chuyến đi lưu Firebase theo đúng 5 trường yêu cầu
+        // Đối tượng chuyến đi lưu Firebase theo đúng các trường yêu cầu
         const tripRecord = {
           stt: nextStt,
           date: formatTripDate(finishTime),
           timestamp: Date.now(),
           distance: finalFare.steppedDistanceKm,
           raw_distance: finalFare.rawDistanceKm,
+          coords: pathCoords,
           img: routeSnapshot,
           total_fare: finalFare.totalFare,
           total_fare_formatted: formatVND(finalFare.totalFare),
@@ -1773,6 +1893,7 @@
         setEndTime(null);
         setFareResult(calculateFare(0, selectedVehicle, pricing));
         setLastRouteImg(null);
+        setInvoiceCoords(null);
         setSavingStatus(null);
       };
 
@@ -2195,20 +2316,20 @@
                   </div>
 
                   {/* Bản đồ hình ảnh đoạn đường đã di chuyển */}
-                  {pathCoords && pathCoords.length > 0 ? (
-                    <InvoiceMiniMap pathCoords={pathCoords} currentPos={currentPos} />
+                  {invoiceCoords && invoiceCoords.length > 0 ? (
+                    <InvoiceMiniMap pathCoords={invoiceCoords} currentPos={invoiceCoords[invoiceCoords.length - 1]} />
                   ) : lastRouteImg ? (
                     <div className="space-y-1.5 my-3">
                       <div className="flex items-center justify-between text-xs text-slate-300 font-semibold">
                         <span className="flex items-center gap-1.5 text-cyan-400">
-                          <Icons.Route /> Ảnh snapshot lộ trình di chuyển
+                          <Icons.Route /> Bản đồ lộ trình di chuyển trực quan
                         </span>
                         <span className="text-[11px] text-slate-400">Click để phóng to</span>
                       </div>
                       <img 
                         src={lastRouteImg} 
                         alt="Lộ trình di chuyển" 
-                        className="w-full h-44 sm:h-52 object-contain rounded-2xl border border-slate-700/80 shadow-inner bg-slate-950 cursor-pointer hover:border-cyan-500/50 transition-all"
+                        className="w-full h-44 sm:h-52 object-cover rounded-2xl border border-slate-700/80 shadow-inner bg-slate-950 cursor-pointer hover:border-cyan-500/50 transition-all"
                         onClick={() => setPreviewImg(lastRouteImg)}
                       />
                     </div>
